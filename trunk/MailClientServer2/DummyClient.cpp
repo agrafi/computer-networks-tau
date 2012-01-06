@@ -99,6 +99,7 @@ void testResponse(int workingServerSocket,WorkflowIdentifier workflowIdentifier,
 	}
 }
 void testMethod(int workingServerSocket,WorkflowIdentifier workflowIdentifier,bool expectedResponse,string body,string expectedBody){
+	cout << "test" << getWorkflowIdentifierString(workflowIdentifier) << endl;
 	sendMessage(workingServerSocket,workflowIdentifier,body);
 	if (expectedResponse){
 		testResponse(workingServerSocket,workflowIdentifier,expectedBody);
@@ -161,9 +162,14 @@ void assertParseWorkflowIdentifierEnum(){
 }
 string host = "127.0.0.1";
 string port = "8088";
-int main(){
+int main(int argc, char* argv[]){
+	if (argc == 3){
+		host = argv[1];
+		port = argv[2];
+	}
 	assertParseWorkflowIdentifierEnum();
-	for (int i=1;i<12;i+=2){
+	int i=1;
+	for (;i<12;i+=2){
 		int workingServerSocket=connectToServer((char *)host.c_str(),(char *)port.c_str());
 		if (workingServerSocket == -1){
 			return 0;
