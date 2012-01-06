@@ -26,7 +26,8 @@
 #include <errno.h>
 //working with erros
 using namespace std;
-string NO_LOGIN_STR = "NO_LOGIN";
+const int MAX_PERMITTED_USERS = 1023;
+const string NO_LOGIN_STR = "NO_LOGIN";
 typedef struct MailboxStruct {
 	int lastInsertedMailMessageId;
 	string password;
@@ -860,6 +861,9 @@ void printScheduledSockets(ServerFDSets &serverFDSets,ConnectionStore &connectio
 		cout << endl;
 	}
 }
+bool hasMaxNumberOfConnectionsBeenReached(int numConnectedConnections){
+	return (numConnectedConnections == MAX_PERMITTED_USERS);
+}
 int main(int argc, char* argv[]) {
 	ArgumentsServer arguments;
 	bool successfullyParsedArgs = parseArgumentsServer(argc, argv, arguments);
@@ -887,7 +891,7 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
-	retValue = listen(listeningServerSocket, 5);
+	retValue = listen(listeningServerSocket, 50);
 	if (retValue < 0) {
 		perror("listen");
 		TEMP_FAILURE_RETRY(close (listeningServerSocket));
@@ -898,6 +902,7 @@ int main(int argc, char* argv[]) {
 	serverFDSets.init();
 	serverFDSets.fdmax = listeningServerSocket;
 	ConnectionStore connectionStore;
+	int numConnectedConnections=0;
 	while (true) {
 		printScheduledSockets(serverFDSets,connectionStore,listeningServerSocket);
 		scheduleSocketForReading(listeningServerSocket,serverFDSets);
@@ -910,7 +915,7 @@ int main(int argc, char* argv[]) {
 		// run through the existing connections looking for data to read or write
 		for (int i = 0; i <= serverFDSets.fdmax; i++) {
 			if (i == listeningServerSocket) {
-				if (isSocketReadyForReading(i, serverFDSets)) { // we got a connection
+				if (!hasMaxNumberOfConnectionsBeenReached(numConnectedConnections) && isSocketReadyForReading(i, serverFDSets)) { // we got a connection
 					// handle new connections
 					sockaddr_in client_info;
 					unsigned int client_info_size = sizeof(client_info);
@@ -935,6 +940,7 @@ int main(int argc, char* argv[]) {
 					connectionStore.insert(
 							ConnectionStorePair(workingServerSocket,
 									serverConnection));
+					numConnectedConnections++;
 				}
 				continue;
 			}
@@ -956,6 +962,7 @@ int main(int argc, char* argv[]) {
 									serverConnection.loggedInUsername, false);
 						}
 						connectionStore.erase(i);
+						numConnectedConnections--;
 					} else {
 						scheduleSocketForReading(serverConnection.workingSocket,serverFDSets);
 						//If we need to send something we schedule it for sending
