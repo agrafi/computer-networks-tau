@@ -175,11 +175,14 @@ typedef struct ServerFDSetsStruct {
 	FDPairSets fDPairSetsCurSelectResponse;
 	FDPairSets fDPairSetsNextSelectResponse;
 	FDPairSets fDPairSetsPrevSelectRequest;
-	int fdmax;
+	int curfdmax;
+	int nextfdmax;
 	void init(){
 		fDPairSetsCurSelectResponse.init();
 		fDPairSetsNextSelectResponse.init();
 		fDPairSetsPrevSelectRequest.init();
+		nextfdmax = 0;
+		curfdmax = 0;
 	}
 	void beginIteration(){
 		//we want to actually schedule for the select operation the releavnt fd_sets
@@ -188,6 +191,8 @@ typedef struct ServerFDSetsStruct {
 		fDPairSetsPrevSelectRequest.copy(fDPairSetsNextSelectResponse);
 		//We want to re initialize the sets for the iteration itself
 		fDPairSetsNextSelectResponse.init();
+		curfdmax = nextfdmax;
+		nextfdmax = 0;
 	}
 } ServerFDSets;
 typedef int (*sendRecvFunc)(int socket, void *buffer, size_t size, int flags);
@@ -269,15 +274,18 @@ UserActionResult receiveData(int workingSocket, char *&buffer,
 		unsigned int &numRemainingBytes) {
 	UserActionResult result = PROBLEM_RESULT;
 	int retValue = recv(workingSocket, buffer, numRemainingBytes, 0);
-	if (retValue != -1) {//If no problem has occurred
-		result.errorOccurred = false;
-		//We can cast as an unsigned int because recv is supposed to return -1,0 or a positive number
-		if (((unsigned int) retValue) == numRemainingBytes) {
-			numRemainingBytes = 0;
-			result.finishedAccordingToPlan = true;
-		} else {
-			numRemainingBytes -= retValue;
-		}
+	if (retValue == -1 || retValue == 0 ){
+		//We interpret this as an error because the user is supposed to send QUIT message before quitting
+		return result;
+	}
+	//If no problem has occurred
+	result.errorOccurred = false;
+	//We can cast as an unsigned int because recv is supposed to return -1,0 or a positive number
+	if (((unsigned int) retValue) == numRemainingBytes) {
+		numRemainingBytes = 0;
+		result.finishedAccordingToPlan = true;
+	} else {
+		numRemainingBytes -= retValue;
 	}
 	return result;
 }
@@ -368,38 +376,17 @@ bool socketWasPreviouselyScheduledForWrite(int workingSocket,ServerFDSets &serve
 	return isSocketMemberOfSet(workingSocket,&serverFDSets.fDPairSetsPrevSelectRequest.write);
 }
 
-void scheduleSocket(int workingSocket,fd_set *fdSet,int &curFdMax){
+void scheduleSocket(int workingSocket,fd_set *fdSet,int &nextFdMax){
 	FD_SET(workingSocket, fdSet);
-	if (workingSocket > curFdMax) { // keep track of the max
-		curFdMax = workingSocket;
+	if (workingSocket > nextFdMax) { // keep track of the max
+		nextFdMax = workingSocket;
 	}
 }
 void scheduleSocketForReading(int workingSocket,ServerFDSets &serverFDSets) {
-	scheduleSocket(workingSocket, &serverFDSets.fDPairSetsNextSelectResponse.read,serverFDSets.fdmax);
+	scheduleSocket(workingSocket, &serverFDSets.fDPairSetsNextSelectResponse.read,serverFDSets.nextfdmax);
 }
 void scheduleSocketForWriting(int workingSocket,ServerFDSets &serverFDSets) {
-	scheduleSocket(workingSocket, &serverFDSets.fDPairSetsNextSelectResponse.write,serverFDSets.fdmax);
-}
-void findNewFDMax(int workingSocket,ServerFDSets &serverFDSets){
-	for (int i=serverFDSets.fdmax-1;i>0;i++){
-		if (isSocketScheduledForReading(workingSocket,serverFDSets) ||
-				isSocketScheduledForWriting(workingSocket,serverFDSets)){
-			serverFDSets.fdmax = i;
-			return;//we've found the new fd max
-		}
-	}
-}
-void removeSocketSchedule(int workingSocket,fd_set *fdSet,ServerFDSets &serverFDSets){
-	FD_CLR(workingSocket, fdSet);
-	if (workingSocket == serverFDSets.fdmax){
-		findNewFDMax(workingSocket,serverFDSets);
-	}
-}
-void removeSocketFromReading(int workingSocket,ServerFDSets &serverFDSets) {
-	removeSocketSchedule(workingSocket, &serverFDSets.fDPairSetsNextSelectResponse.read,serverFDSets);
-}
-void removeSocketFromWriting(int workingSocket,ServerFDSets &serverFDSets) {
-	removeSocketSchedule(workingSocket, &serverFDSets.fDPairSetsNextSelectResponse.write,serverFDSets);
+	scheduleSocket(workingSocket, &serverFDSets.fDPairSetsNextSelectResponse.write,serverFDSets.nextfdmax);
 }
 UserActionResult handleConnectState(ServerConnection &serverConnection,ServerFDSets &serverFDSets) {
 	UserActionResult userActionResult = PROBLEM_RESULT;
@@ -720,6 +707,9 @@ void handleComposeMailState(ServerSingleConversation &serverSingleConversation,
 			"Mail Sent");
 }
 bool shouldSendChatMessage(ServerConnection &serverConnection,ServerFDSets &serverFDSets) {
+	//handle chat message sending only if the socket is ready for writing
+	//we aren't already sending something to the client on they're own request
+	//and we actually have something to send them (i.e. a chat message)
 	return isSocketReadyForWriting(serverConnection.workingSocket,serverFDSets)
 			&& !serverConnection.clientInitiatedConversation.isInSendResponseState()
 			&& serverConnection.containsChatMessagesToBeSent();
@@ -815,9 +805,6 @@ UserActionResult handleUserInteraction(ServerConnection &serverConnection,
 		MailStore &userMailboxes,ServerFDSets &serverFDSets) {
 	UserActionResult userActionResult = PROBLEM_RESULT;
 	if (shouldSendChatMessage(serverConnection,serverFDSets)) {
-		//handle chat message sending only if the socket is ready for writing
-		//we aren't already sending something to the client on they're own request
-		//and we actually have something to send them (i.e. a chat message)
 		userActionResult = handleChatMessageServerSending(serverConnection);
 		if (userActionResult.errorOccurred) {
 			return userActionResult;
@@ -946,7 +933,7 @@ bool parseArgumentsServer(int argc, char* argv[], ArgumentsServer &arguments) {
 	return true;
 }
 void printScheduledSockets(ServerFDSets &serverFDSets,ConnectionStore &connectionStore,int listeningServerSocket){
-	for (int i=0;i<=serverFDSets.fdmax;i++){
+	for (int i=0;i<=serverFDSets.curfdmax;i++){
 		if (i == listeningServerSocket){
 			continue;
 		}
@@ -1007,20 +994,20 @@ int main(int argc, char* argv[]) {
 	}
 	ServerFDSets serverFDSets;
 	serverFDSets.init();
-	serverFDSets.fdmax = listeningServerSocket;
+	serverFDSets.nextfdmax = listeningServerSocket;
 	ConnectionStore connectionStore;
 	int numConnectedConnections=0;
 	while (true) {
 		printScheduledSockets(serverFDSets,connectionStore,listeningServerSocket);
 		scheduleSocketForReading(listeningServerSocket,serverFDSets);
 		serverFDSets.beginIteration();
-		if (select(serverFDSets.fdmax + 1, &serverFDSets.fDPairSetsCurSelectResponse.read, &serverFDSets.fDPairSetsCurSelectResponse.write, NULL, NULL)
+		if (select(serverFDSets.curfdmax + 1, &serverFDSets.fDPairSetsCurSelectResponse.read, &serverFDSets.fDPairSetsCurSelectResponse.write, NULL, NULL)
 				== -1) {
 			perror("select");
 			return -1;
 		}
 		// run through the existing connections looking for data to read or write
-		for (int i = 0; i <= serverFDSets.fdmax; i++) {
+		for (int i = 0; i <= serverFDSets.curfdmax; i++) {
 			if (i == listeningServerSocket) {
 				if (!hasMaxNumberOfConnectionsBeenReached(numConnectedConnections) && isSocketReadyForReading(i, serverFDSets)) { // we got a connection
 					// handle new connections
@@ -1064,16 +1051,16 @@ int main(int argc, char* argv[]) {
 						//We do this as to overcome temproray issues with closing the socket
 						serverConnection.clientInitiatedConversation.reset();
 						serverConnection.serverInitiatedConversation.reset();
-						serverConnection.userMailBox->activeSocket = 0;
-						serverConnection.userMailBox = NULL;
 						if (serverConnection.loggedInUsername != NO_LOGIN_STR) {
 							updateLoggedInUsersVector(
 									serverConnection.userMailBox->indexInLoggedInUsersList, false);
+							serverConnection.userMailBox->activeSocket = 0;
+							serverConnection.userMailBox = NULL;
 						}
 						connectionStore.erase(i);
 						numConnectedConnections--;
-						removeSocketFromReading(i,serverFDSets);
-						removeSocketFromWriting(i,serverFDSets);
+//						removeSocketFromReading(i,serverFDSets);
+//						removeSocketFromWriting(i,serverFDSets);
 					} else {
 						scheduleSocketForReading(serverConnection.workingSocket,serverFDSets);
 						//If we need to send something we schedule it for sending
