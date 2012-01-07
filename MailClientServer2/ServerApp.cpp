@@ -48,6 +48,7 @@ typedef struct MailboxStruct {
 	vector<MailMessage*> messages;
 	vector<string> chatMessages;
 	unsigned int indexInLoggedInUsersList;
+	int activeSocket;
 } Mailbox;
 typedef struct BufferedHeaderStruct {
 	unsigned int numRemainingBytes;
@@ -480,6 +481,7 @@ UserActionResult handleLoginReadBodyState(ServerConnection &serverConnection,
 			MailStore::iterator iter = userMailboxes.find(serverConnection.loggedInUsername);
 			//No need to check if the iter is different than end since we have been authenticated => the user is in the store
 			serverConnection.userMailBox = &iter->second;
+			serverConnection.userMailBox->activeSocket = serverConnection.workingSocket;
 			updateLoggedInUsersVector(serverConnection.userMailBox->indexInLoggedInUsersList, true);
 		} else {
 			serverConnection.loggedInUsername = NO_LOGIN_STR;
@@ -781,7 +783,10 @@ bool isUserOnline(Mailbox &userMailbox){
 
 	return isOnline;
 }
-void handleSendChatMessageState(ServerSingleConversation &serverSingleConversation, MailStore &userMailboxes, string &sender) {
+void scheduleRecipientForWriting(Mailbox &recipientMailbox,ServerFDSets &serverFDSets){
+	scheduleSocketForWriting(recipientMailbox.activeSocket,serverFDSets);
+}
+void handleSendChatMessageState(ServerSingleConversation &serverSingleConversation, MailStore &userMailboxes, string &sender,ServerFDSets &serverFDSets) {
 	MailMessage *&inputMailMessage =
 			serverSingleConversation.inMessage.textualProtocolMessage.body.messages.at(
 					0);
@@ -793,6 +798,7 @@ void handleSendChatMessageState(ServerSingleConversation &serverSingleConversati
 			string chatMessage = "New message from " + sender + ":"
 					+ inputMailMessage->messageText + LINE_FEED_CHARACTER;
 			recipientMailbox.chatMessages.push_back(chatMessage);
+			scheduleRecipientForWriting(recipientMailbox,serverFDSets);
 			responseMessage = "";//If the user is online then no message is required back
 		} else {
 			//for each recipient we will clone the message
@@ -812,7 +818,7 @@ UserActionResult handleUserInteraction(ServerConnection &serverConnection,
 		//handle chat message sending only if the socket is ready for writing
 		//we aren't already sending something to the client on they're own request
 		//and we actually have something to send them (i.e. a chat message)
-		UserActionResult userActionResult = handleChatMessageServerSending(serverConnection);
+		userActionResult = handleChatMessageServerSending(serverConnection);
 		if (userActionResult.errorOccurred) {
 			return userActionResult;
 		}
@@ -881,7 +887,7 @@ UserActionResult handleUserInteraction(ServerConnection &serverConnection,
 			handleShowOnlineUsersState(clientInitiatedConversation);
 			break;
 		case SEND_CHAT_MSG:
-			handleSendChatMessageState(clientInitiatedConversation, userMailboxes, serverConnection.loggedInUsername);
+			handleSendChatMessageState(clientInitiatedConversation, userMailboxes, serverConnection.loggedInUsername,serverFDSets);
 			break;
 		default:
 			userActionResult.errorOccurred = true;
@@ -1058,6 +1064,8 @@ int main(int argc, char* argv[]) {
 						//We do this as to overcome temproray issues with closing the socket
 						serverConnection.clientInitiatedConversation.reset();
 						serverConnection.serverInitiatedConversation.reset();
+						serverConnection.userMailBox->activeSocket = 0;
+						serverConnection.userMailBox = NULL;
 						if (serverConnection.loggedInUsername != NO_LOGIN_STR) {
 							updateLoggedInUsersVector(
 									serverConnection.userMailBox->indexInLoggedInUsersList, false);
