@@ -15,7 +15,7 @@ const string DELETE_MAIL_STR 		= "DELETE_MAIL      ";
 const string QUIT_STR		 		= "QUIT             ";
 const string COMPOSE_MAIL_STR 		= "COMPOSE_MAIL     ";
 const string SHOW_ONLINE_USERS_SRT  = "SHOW_ONLINE_USERS";
-const string SEND_CHAT_MSG_SRT		= "SEND_CHAT_MSG    ";
+const string SEND_CHAT_MSG_SRT		= "MSG              ";
 const string RECEIVE_CHAT_MSG_SRT	= "RECEIVE_CHAT_MSG ";
 bool workflowStrBeginsWithInput(const string &workflowStr,const string&input){
 	return !(workflowStr.compare(0, input.length(), input));

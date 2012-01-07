@@ -83,9 +83,24 @@ bool sendMessageToServer(int c_sock, const string &message) {
 	delete[] outBuffer;
 	return shouldContinue;
 }
+bool receieveChatMessage(int c_sock,Header &header){
+	char *bodyInBuffer = new char[header.bodyLength+1];
+	bool shouldContinue = receiveAllData(c_sock, bodyInBuffer,
+			header.bodyLength);
+	bodyInBuffer[header.bodyLength] = '\0';
+	if (shouldContinue) {
+		cout << bodyInBuffer << endl;
+	}
+	delete[] bodyInBuffer;
+	return shouldContinue;
+}
 bool infoMessageResponse(int c_sock) {
 	Header header;
 	bool shouldContinue = getHeader(c_sock, header);
+	while (shouldContinue && header.workflowIdentifier == RECEIVE_CHAT_MSG){
+		receieveChatMessage(c_sock,header);
+		shouldContinue = getHeader(c_sock, header);
+	}
 	if (!shouldContinue){
 		return shouldContinue;
 	}
@@ -104,6 +119,10 @@ bool infoMessageResponse(int c_sock) {
 bool delimitedTextMessageResponse(int c_sock,vector<string> &responseTokens) {
 	Header header;
 	bool shouldContinue = getHeader(c_sock, header);
+	while (shouldContinue && header.workflowIdentifier == RECEIVE_CHAT_MSG){
+		receieveChatMessage(c_sock,header);
+		shouldContinue = getHeader(c_sock, header);
+	}
 	if (shouldContinue && header.bodyLength > 0) {
 		char *bodyInBuffer = new char[header.bodyLength+1];
 		bool shouldContinue = receiveAllData(c_sock, bodyInBuffer,
@@ -230,6 +249,37 @@ bool getMail(int c_sock, vector<string> &inputTokens) {
 	shouldContinue = getMailResponse(c_sock);
 	return shouldContinue;
 }
+string getChatMessageText(string &inputString){
+	int indexOfColon = inputString.find(':');
+	return inputString.substr(indexOfColon+1);
+}
+bool sendChatMessageRequest(int c_sock, string &inputString, vector<string> &inputTokens){
+	if (inputTokens.size() < 3) {
+		return false;
+	}
+
+	string recipients = inputTokens[1];
+	//this is to replace the ":" symbol which is inputed from the user
+	recipients.replace(recipients.size()-1,1,PIPE_FIELD_SEPARATOR_STRING);
+	string chatMessageText = getChatMessageText(inputString);
+	string body = recipients + chatMessageText;
+
+	string outputHeaderString = parseOutputStringFromHeader(SEND_CHAT_MSG,
+			body.size());
+	bool shouldContinue = sendMessageToServer(c_sock,
+			outputHeaderString + body);
+	return shouldContinue;
+
+}
+bool sendChatMessage(int c_sock, string inputString, vector<string> &inputTokens) {
+	bool shouldContinue = sendChatMessageRequest(c_sock, inputString,inputTokens);
+	if (!shouldContinue) {
+		return shouldContinue;
+	}
+	shouldContinue = getMailResponse(c_sock);
+	return shouldContinue;
+}
+
 bool getAttachmentRequest(int c_sock, vector<string> &inputTokens) {
 	bool shouldContinue = sendRequestToServer(c_sock, inputTokens, 2,
 			GET_ATTACHMENT);
@@ -266,6 +316,10 @@ string readAttachmentFromDisk(string &attachmentPath){
 bool getAttachmentResponse(int c_sock,string &attachmentPath) {
 	Header header;
 	bool shouldContinue = getHeader(c_sock, header);
+	while (shouldContinue && header.workflowIdentifier == RECEIVE_CHAT_MSG){
+		receieveChatMessage(c_sock,header);
+		shouldContinue = getHeader(c_sock, header);
+	}
 	char *bodyInBuffer = new char[header.bodyLength];
 	shouldContinue = receiveAllData(c_sock, bodyInBuffer,
 			header.bodyLength);
@@ -318,6 +372,18 @@ bool composeMailResponse(int c_sock) {
 	bool shouldContinue = infoMessageResponse(c_sock);
 	return shouldContinue;
 }
+bool recieveChatMessageFromServer(int c_sock){
+	Header header;
+	bool shouldContinue = getHeader(c_sock, header);
+	while (shouldContinue && header.workflowIdentifier == RECEIVE_CHAT_MSG){
+		receieveChatMessage(c_sock,header);
+		shouldContinue = getHeader(c_sock, header);
+	}
+	if (!shouldContinue){
+		return shouldContinue;
+	}
+	return shouldContinue;
+}
 bool composeMailRequest(int c_sock) {
 	string recipients,subject,attachments,messageText;
 	getTrimmedInputLine(recipients,3);// Reads line into recipients
@@ -330,6 +396,16 @@ bool composeMailRequest(int c_sock) {
 							attachments + PIPE_FIELD_SEPARATOR;
 
 	//READ FILES
+	//TODO change file reading so that it happens in chunks
+	//We should iterate over the files and see how big they are
+	//Since in addition to the file contents we also send the file size in hexa then the actual length of the body of the message is
+	// for (file f in files)
+	//		file.size + parseIntToHexaString(file.size,BINARY_SIZE_FIELD_LENGTH);
+	//Then we should do the get header and only send it
+	//lastly we should iterate over the files and read chuncks of the attachments and
+	//perform select on c_sock (reading chat message) and c_sock (sending files)
+	//if c_sock is ready for reading we should call recieveChatMessageFromServer [I prepared it for you]
+	//if c_sock is ready for writing we should send the relevant chunk of the attachment we're currently uploading
 	vector<string> attachmentsVec = splitString(attachments,COMMA_LIST_SEPARATOR);
 	for (unsigned int i=0;i<attachmentsVec.size();i++){
 		string curFile = readAttachmentFromDisk(attachmentsVec[i]);
@@ -342,7 +418,6 @@ bool composeMailRequest(int c_sock) {
 	unsigned int messageLength = body.length()+outputHeaderString.length();
 	char *outBuffer = new char[messageLength];
 	outputStringToBuffer(outputHeaderString+body,outBuffer);
-
 	bool shouldContinue = sendAllData(c_sock,outBuffer,&messageLength);
 	delete[] outBuffer;
 	return shouldContinue;
@@ -354,9 +429,37 @@ bool composeMail(int c_sock){
 	}
 	return shouldContinue;
 }
+bool showOnlineUsersRequest(int c_sock, vector<string> &inputTokens){
+	bool shouldContinue = sendRequestToServer(c_sock, inputTokens, 0,
+			SHOW_ONLINE_USERS);
+	return shouldContinue;
+}
+bool showOnlineUsersResponse(int c_sock){
+	bool shouldContinue = infoMessageResponse(c_sock);
+	return shouldContinue;
+}
+
+bool showOnlineUsers(int c_sock, vector<string> &inputTokens){
+	bool shouldContinue = showOnlineUsersRequest(c_sock,inputTokens);
+	if (shouldContinue){
+		shouldContinue = showOnlineUsersResponse(c_sock);
+	}
+	return shouldContinue;
+}
+
 int mailLoop(int c_sock) {
 	string inputString; // Where to store each line.
 	while (true) {
+		//TODO change from blocking on input from user to selecting on either stdin (read) or server (read)
+		//If server is ready then
+		/*
+		 * 	if (!recieveChatMessageFromServer(c_sock)) {
+				cerr << "Error: receive chat message from server failed" << endl;
+				return -1;
+			}
+		 *
+		 * If stdin is ready (both can be ready) then we need to buffer the input line into inputString until \n (should be replaced by \0)
+		 */
 		getline(cin, inputString); // Reads line into inputString
 		vector<string> inputTokens = splitFieldsBySpaceFromString(inputString);
 		if (inputTokens.empty()) {
@@ -396,12 +499,27 @@ int mailLoop(int c_sock) {
 				return -1;
 			}
 			break;
+		case SHOW_ONLINE_USERS:
+			if (!showOnlineUsers(c_sock,inputTokens)){
+				cerr << "Error: show_online_users failed" << endl;
+				return -1;
+			}
+			break;
+		case SEND_CHAT_MSG:
+			//The chat message needs the unformatted input string as it preserves the spaces between the tokens
+			if (!sendChatMessage(c_sock, inputString, inputTokens) != 0) {
+				cerr << "Error: msg failed" << endl;
+				return -1;
+			}
+			break;
 		case QUIT:
 			return quit(c_sock, inputTokens);
 		default: cerr << "Error: Usage 'SHOW_INBOX' or " << endl
 						<< "'GET_MAIL <mail_id>' or'" << endl
 						<< "'GET_ATTACHMENT <mail_id> <attachment_num> \"path\"' or" << endl
 						<< "'DELETE_MAIL <mail_id>' or" << endl
+						<< "'SHOW_ONLINE_USERS' or" << endl
+						<< "'MSG <username>: <message>' or" << endl
 						<< "'QUIT' or" << endl
 						<< "'COMPOSE\n'" << endl;break;
 		}
