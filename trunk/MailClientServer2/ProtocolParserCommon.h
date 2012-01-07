@@ -15,6 +15,7 @@ const char PIPE_FIELD_SEPARATOR = '|';
 const char LINE_FEED_CHARACTER = '\n';
 const char COMMA_LIST_SEPARATOR = ',';
 const string COMMA_LIST_SEPARATOR_STRING = ",";
+const string PIPE_FIELD_SEPARATOR_STRING = "|";
 const char END_OF_HEADER_START_MARKER = LINE_FEED_CHARACTER;
 const string EOF = "\n";
 const string END_OF_HEADER_MARKER=EOF+EOF;

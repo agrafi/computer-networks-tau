@@ -205,7 +205,7 @@ void initUsers(MailStore &userMailboxes, const string usersFilePath) {
 	//mailbox starts as an empty list of MailMessages and a lastInsertedMailMessageId int member initialized to 0
 	char buffer[getUserRecordInFileLength()];
 	ifstream myfile(usersFilePath.c_str());
-	int indexInLoggedInUsersList = 0;
+	unsigned int indexInLoggedInUsersList = 0;
 	while (!myfile.eof()) {
 		myfile.getline(buffer, getUserRecordInFileLength());
 		string username = getTextualField(USER_RECORD_SEPARATOR, buffer);
@@ -354,7 +354,12 @@ bool isSocketReadyForReading(int workingSocket,ServerFDSets &serverFDSets) {
 bool isSocketReadyForWriting(int workingSocket,ServerFDSets &serverFDSets) {
 	return isSocketMemberOfSet(workingSocket,&serverFDSets.fDPairSetsCurSelectResponse.write);
 }
-
+bool isSocketScheduledForReading(int workingSocket,ServerFDSets &serverFDSets) {
+	return isSocketMemberOfSet(workingSocket,&serverFDSets.fDPairSetsNextSelectResponse.read);
+}
+bool isSocketScheduledForWriting(int workingSocket,ServerFDSets &serverFDSets) {
+	return isSocketMemberOfSet(workingSocket,&serverFDSets.fDPairSetsNextSelectResponse.write);
+}
 bool socketWasPreviouselyScheduledForRead(int workingSocket,ServerFDSets &serverFDSets){
 	return isSocketMemberOfSet(workingSocket,&serverFDSets.fDPairSetsPrevSelectRequest.read);
 }
@@ -373,6 +378,27 @@ void scheduleSocketForReading(int workingSocket,ServerFDSets &serverFDSets) {
 }
 void scheduleSocketForWriting(int workingSocket,ServerFDSets &serverFDSets) {
 	scheduleSocket(workingSocket, &serverFDSets.fDPairSetsNextSelectResponse.write,serverFDSets.fdmax);
+}
+void findNewFDMax(int workingSocket,ServerFDSets &serverFDSets){
+	for (int i=serverFDSets.fdmax-1;i>0;i++){
+		if (isSocketScheduledForReading(workingSocket,serverFDSets) ||
+				isSocketScheduledForWriting(workingSocket,serverFDSets)){
+			serverFDSets.fdmax = i;
+			return;//we've found the new fd max
+		}
+	}
+}
+void removeSocketSchedule(int workingSocket,fd_set *fdSet,ServerFDSets &serverFDSets){
+	FD_CLR(workingSocket, fdSet);
+	if (workingSocket == serverFDSets.fdmax){
+		findNewFDMax(workingSocket,serverFDSets);
+	}
+}
+void removeSocketFromReading(int workingSocket,ServerFDSets &serverFDSets) {
+	removeSocketSchedule(workingSocket, &serverFDSets.fDPairSetsNextSelectResponse.read,serverFDSets);
+}
+void removeSocketFromWriting(int workingSocket,ServerFDSets &serverFDSets) {
+	removeSocketSchedule(workingSocket, &serverFDSets.fDPairSetsNextSelectResponse.write,serverFDSets);
 }
 UserActionResult handleConnectState(ServerConnection &serverConnection,ServerFDSets &serverFDSets) {
 	UserActionResult userActionResult = PROBLEM_RESULT;
@@ -450,11 +476,11 @@ UserActionResult handleLoginReadBodyState(ServerConnection &serverConnection,
 				message.body);
 		loginSucceeded = authenticationPassed(message.body, userMailboxes);
 		if (loginSucceeded) {
+			serverConnection.loggedInUsername = message.body.userLogin.username;
 			MailStore::iterator iter = userMailboxes.find(serverConnection.loggedInUsername);
 			//No need to check if the iter is different than end since we have been authenticated => the user is in the store
 			serverConnection.userMailBox = &iter->second;
 			updateLoggedInUsersVector(serverConnection.userMailBox->indexInLoggedInUsersList, true);
-			serverConnection.loggedInUsername = message.body.userLogin.username;
 		} else {
 			serverConnection.loggedInUsername = NO_LOGIN_STR;
 		}
@@ -706,6 +732,7 @@ void prepareChatMessageForClient(vector<string> &chatMessages,ServerSingleConver
 	for (vector<string>::iterator itr = chatMessages.begin(); itr != chatMessages.end(); itr++) {
 		messagesStr.append(*itr);
 	}
+	messagesStr.erase(messagesStr.size()-1);//Remove the last line feed character
 	prepareInfoMessageResponse(serverInitiatedConversation, RECEIVE_CHAT_MSG,
 			messagesStr);
 	chatMessages.clear();
@@ -727,15 +754,16 @@ bool messageContainsNoBody(BufferedTextualProtocolMessage &message){
 	return (message.textualProtocolMessage.header.bodyLength == 0);
 }
 string getListOfLoggedInUsers(){
-	string listOfLoggedInUsers;
+	string listOfLoggedInUsers = "Online users: ";
 	for (vector<LoggedInUserPair>::iterator it = loggedInUsersVector.begin();
 			it < loggedInUsersVector.end(); it++) {
 		LoggedInUserPair &loggedInUserPair = *it;
 		if (loggedInUserPair.second == true){
-			listOfLoggedInUsers.append(COMMA_LIST_SEPARATOR_STRING);
 			listOfLoggedInUsers.append(loggedInUserPair.first);
+			listOfLoggedInUsers.append(COMMA_LIST_SEPARATOR_STRING);
 		}
 	}
+	listOfLoggedInUsers.erase(listOfLoggedInUsers.size()-1);//we want to remove the last comma
 	return listOfLoggedInUsers;
 }
 void handleShowOnlineUsersState(ServerSingleConversation &serverSingleConversation){
@@ -762,10 +790,10 @@ void handleSendChatMessageState(ServerSingleConversation &serverSingleConversati
 		Mailbox &recipientMailbox = userMailboxes.at(
 				inputMailMessage->recipients.at(i));
 		if (isUserOnline(recipientMailbox)) {
-			string chatMessage = sender + ": "
-					+ inputMailMessage->messageText;
+			string chatMessage = "New message from " + sender + ":"
+					+ inputMailMessage->messageText + LINE_FEED_CHARACTER;
 			recipientMailbox.chatMessages.push_back(chatMessage);
-			responseMessage = "SENT";
+			responseMessage = "";//If the user is online then no message is required back
 		} else {
 			//for each recipient we will clone the message
 			saveMail(recipientMailbox,sender,inputMailMessage);
@@ -1036,6 +1064,8 @@ int main(int argc, char* argv[]) {
 						}
 						connectionStore.erase(i);
 						numConnectedConnections--;
+						removeSocketFromReading(i,serverFDSets);
+						removeSocketFromWriting(i,serverFDSets);
 					} else {
 						scheduleSocketForReading(serverConnection.workingSocket,serverFDSets);
 						//If we need to send something we schedule it for sending
