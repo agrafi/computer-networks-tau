@@ -85,3 +85,13 @@ string parseOutputStringFromQuitMessage(const Body &body){
 string parseOutputStringFromComposeMailMessage(const Body &body){
 	return body.infoMessage;
 }
+string parseOutputStringFromSendChatMsgMessage(const Body &body){
+	return body.infoMessage;
+}
+string parseOutputStringFromReceiveChatMsgMessage(const Body &body){
+	return body.infoMessage;
+}
+string parseOutputStringFromShowOnlineUsersMessage(const Body &body){
+	return body.infoMessage;
+}
+

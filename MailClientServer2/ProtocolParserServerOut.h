@@ -19,5 +19,8 @@ string parseOutputStringFromGetMailMessage(const Body &body);
 string parseOutputStringFromDeleteMailMessage(const Body &body);
 string parseOutputStringFromQuitMessage(const Body &body);
 string parseOutputStringFromComposeMailMessage(const Body &body);
+string parseOutputStringFromSendChatMsgMessage(const Body &body);
+string parseOutputStringFromReceiveChatMsgMessage(const Body &body);
+string parseOutputStringFromShowOnlineUsersMessage(const Body &body);
 
 #endif /* MESSAGEPARSER_H_ */
