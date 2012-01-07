@@ -271,12 +271,16 @@ bool sendChatMessageRequest(int c_sock, string &inputString, vector<string> &inp
 	return shouldContinue;
 
 }
+bool sendChatMessageResponse(int c_sock){
+	bool shouldContinue = infoMessageResponse(c_sock);
+	return shouldContinue;
+}
 bool sendChatMessage(int c_sock, string inputString, vector<string> &inputTokens) {
 	bool shouldContinue = sendChatMessageRequest(c_sock, inputString,inputTokens);
 	if (!shouldContinue) {
 		return shouldContinue;
 	}
-	shouldContinue = getMailResponse(c_sock);
+	shouldContinue = sendChatMessageResponse(c_sock);
 	return shouldContinue;
 }
 
