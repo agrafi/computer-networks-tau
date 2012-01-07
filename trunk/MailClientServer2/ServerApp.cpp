@@ -26,13 +26,6 @@
 #include <errno.h>
 //working with erros
 using namespace std;
-const int MAX_PERMITTED_USERS = 1023;
-const string NO_LOGIN_STR = "NO_LOGIN";
-typedef struct MailboxStruct {
-	int lastInsertedMailMessageId;
-	string password;
-	vector<MailMessage*> messages;
-} Mailbox;
 typedef struct UserActionResultStruct {
 	//Defines whether the stage has finished according To Plan
 	//(for example received all expected bytes)
@@ -43,7 +36,19 @@ typedef struct UserActionResultStruct {
 		return finishedAccordingToPlan && !errorOccurred;
 	}
 } UserActionResult;
-UserActionResult PROBLEM_RESULT = { false, true };
+const UserActionResult PROBLEM_RESULT = { false, true };
+const int MAX_PERMITTED_USERS = 1023;
+const string NO_LOGIN_STR = "NO_LOGIN";
+typedef pair<string, bool> LoggedInUserPair;
+typedef vector<LoggedInUserPair> LoggedInUsersVector;
+LoggedInUsersVector loggedInUsersVector;
+typedef struct MailboxStruct {
+	int lastInsertedMailMessageId;
+	string password;
+	vector<MailMessage*> messages;
+	vector<string> chatMessages;
+	unsigned int indexInLoggedInUsersList;
+} Mailbox;
 typedef struct BufferedHeaderStruct {
 	unsigned int numRemainingBytes;
 	char buffer[FIXED_HEADER_SIZE];
@@ -116,6 +121,7 @@ typedef struct ServerSingleConversationStruct {
 	bool isInSendResponseState() {
 		return isInState(SEND_RESPONSE);
 	}
+	//TODO see if this method is needed
 	bool isInFinishedState() {
 		return isInState(FINISHED);
 	}
@@ -129,12 +135,14 @@ typedef struct ServerConnectionStruct {
 	int workingSocket;
 	ServerSingleConversation clientInitiatedConversation;
 	ServerSingleConversation serverInitiatedConversation;
+	Mailbox *userMailBox;
 	string loggedInUsername;
 	ConnectionState connectionState;
 	void init(int workingServerSocket){
 		connectionState = CONNECTION;
 		workingSocket = workingServerSocket;
 		loggedInUsername = NO_LOGIN_STR;
+		userMailBox = NULL;
 		BufferedTextualProtocolMessage dummyMessage;
 		dummyMessage.numRemainingBytes = 0;
 		dummyMessage.buffer = NULL;
@@ -144,6 +152,10 @@ typedef struct ServerConnectionStruct {
 		serverInitiatedConversation.inMessage = dummyMessage;
 		clientInitiatedConversation.outMessage = dummyMessage;
 		serverInitiatedConversation.outMessage = dummyMessage;
+	}
+	bool containsChatMessagesToBeSent(){
+		return (((userMailBox != NULL) && (!userMailBox->chatMessages.empty())) ||
+				serverInitiatedConversation.isInSendResponseState());
 	}
 } ServerConnection;
 typedef struct FDPairSetsStruct {
@@ -182,13 +194,10 @@ typedef pair<string, Mailbox> MailboxUserPair;
 typedef map<string, Mailbox> MailStore;
 typedef pair<int, ServerConnection> ConnectionStorePair;
 typedef map<int, ServerConnection> ConnectionStore;
-typedef pair<string, bool> LoggedInUserPair;
-typedef vector<LoggedInUserPair> LoggedInUsersVector;
 const char USER_RECORD_SEPARATOR = '\t';
 const int USER_RECORD_SEPARATOR_LENGTH = 1;
 const int EOF_LENGTH = 2;
 #define getUserRecordInFileLength() MAX_USERNAME_LENGTH+MAX_PASSWORD_LENGTH+USER_RECORD_SEPARATOR_LENGTH+EOF_LENGTH
-LoggedInUsersVector loggedInUsersVector;
 void initUsers(MailStore &userMailboxes, const string usersFilePath) {
 	//Initialize server data structures
 	//Init user map
@@ -196,7 +205,7 @@ void initUsers(MailStore &userMailboxes, const string usersFilePath) {
 	//mailbox starts as an empty list of MailMessages and a lastInsertedMailMessageId int member initialized to 0
 	char buffer[getUserRecordInFileLength()];
 	ifstream myfile(usersFilePath.c_str());
-
+	int indexInLoggedInUsersList = 0;
 	while (!myfile.eof()) {
 		myfile.getline(buffer, getUserRecordInFileLength());
 		string username = getTextualField(USER_RECORD_SEPARATOR, buffer);
@@ -205,6 +214,7 @@ void initUsers(MailStore &userMailboxes, const string usersFilePath) {
 		//we're looking for then null character since getLine removes the \n characters and appends the null character instead
 		m.password = getTextualField(NULL,
 				(buffer + username.length() + USER_RECORD_SEPARATOR_LENGTH));
+		m.indexInLoggedInUsersList = indexInLoggedInUsersList++;
 		userMailboxes.insert(MailboxUserPair(username, m));
 		loggedInUsersVector.push_back(LoggedInUserPair(username, false));
 	}
@@ -410,16 +420,10 @@ UserActionResult handleLoginReadHeaderState(
 			LOGIN);
 	return userActionResult;
 }
-void updateLoggedInUsersVector(string &username, bool loggedIn) {
-	vector<LoggedInUserPair>::iterator it;
-	//We iterate over the vector since we need to have a sorted list according to the order in the users file
-	for (it = loggedInUsersVector.begin(); it < loggedInUsersVector.end();
-			it++) {
-		LoggedInUserPair &m = *it;
-		if (m.first.compare(username) == 0) {
-			m.second = loggedIn;
-			return;
-		}
+void updateLoggedInUsersVector(unsigned int indexInLoggedInUsersVector, bool loggedIn) {
+	if (indexInLoggedInUsersVector<loggedInUsersVector.size()){
+		LoggedInUserPair &loggedInUserPair = loggedInUsersVector.at(indexInLoggedInUsersVector);
+		loggedInUserPair.second = loggedIn;
 	}
 }
 
@@ -446,7 +450,10 @@ UserActionResult handleLoginReadBodyState(ServerConnection &serverConnection,
 				message.body);
 		loginSucceeded = authenticationPassed(message.body, userMailboxes);
 		if (loginSucceeded) {
-			updateLoggedInUsersVector(message.body.userLogin.username, true);
+			MailStore::iterator iter = userMailboxes.find(serverConnection.loggedInUsername);
+			//No need to check if the iter is different than end since we have been authenticated => the user is in the store
+			serverConnection.userMailBox = &iter->second;
+			updateLoggedInUsersVector(serverConnection.userMailBox->indexInLoggedInUsersList, true);
 			serverConnection.loggedInUsername = message.body.userLogin.username;
 		} else {
 			serverConnection.loggedInUsername = NO_LOGIN_STR;
@@ -639,6 +646,29 @@ void deleteMailBoxes(MailStore &userMailboxes) {
 		}
 	}
 }
+void saveMail(Mailbox &recipientMailbox,string &sender,MailMessage *&inputMailMessage){
+	MailMessage *mailMessage = new MailMessage;
+	mailMessage->mailId = ++recipientMailbox.lastInsertedMailMessageId;
+	mailMessage->sender = sender;
+	mailMessage->subject = inputMailMessage->subject;
+	mailMessage->messageText = inputMailMessage->messageText;
+	mailMessage->recipients = inputMailMessage->recipients;
+	mailMessage->numberOfAttachments =
+			inputMailMessage->numberOfAttachments;
+	for (unsigned int i = 0; i < inputMailMessage->attachments.size();
+			i++) {
+		Attachment *&inputAttachment = inputMailMessage->attachments.at(i);
+		Attachment *attachment = new Attachment;
+		attachment->name = inputAttachment->name;
+		attachment->serialNumber = inputAttachment->serialNumber;
+		attachment->file.size = inputAttachment->file.size;
+		attachment->file.data = new char[attachment->file.size];
+		memcpy(attachment->file.data, inputAttachment->file.data,
+				attachment->file.size);
+		mailMessage->attachments.push_back(attachment);
+	}
+	recipientMailbox.messages.push_back(mailMessage);
+}
 void handleComposeMailState(ServerSingleConversation &serverSingleConversation,
 		MailStore &userMailboxes, string username) {
 	MailMessage *&inputMailMessage =
@@ -649,27 +679,7 @@ void handleComposeMailState(ServerSingleConversation &serverSingleConversation,
 		//for each recipient we will clone the message
 		Mailbox &recipientMailbox = userMailboxes.at(
 				inputMailMessage->recipients.at(i));
-		MailMessage *mailMessage = new MailMessage;
-		mailMessage->mailId = ++recipientMailbox.lastInsertedMailMessageId;
-		mailMessage->sender = username;
-		mailMessage->subject = inputMailMessage->subject;
-		mailMessage->messageText = inputMailMessage->messageText;
-		mailMessage->recipients = inputMailMessage->recipients;
-		mailMessage->numberOfAttachments =
-				inputMailMessage->numberOfAttachments;
-		for (unsigned int i = 0; i < inputMailMessage->attachments.size();
-				i++) {
-			Attachment *&inputAttachment = inputMailMessage->attachments.at(i);
-			Attachment *attachment = new Attachment;
-			attachment->name = inputAttachment->name;
-			attachment->serialNumber = inputAttachment->serialNumber;
-			attachment->file.size = inputAttachment->file.size;
-			attachment->file.data = new char[attachment->file.size];
-			memcpy(attachment->file.data, inputAttachment->file.data,
-					attachment->file.size);
-			mailMessage->attachments.push_back(attachment);
-		}
-		recipientMailbox.messages.push_back(mailMessage);
+		saveMail(recipientMailbox,username,inputMailMessage);
 	}
 	//clean up of the input
 	for (unsigned int i = 0; i < inputMailMessage->attachments.size(); i++) {
@@ -684,30 +694,87 @@ void handleComposeMailState(ServerSingleConversation &serverSingleConversation,
 bool shouldSendChatMessage(ServerConnection &serverConnection,ServerFDSets &serverFDSets) {
 	return isSocketReadyForWriting(serverConnection.workingSocket,serverFDSets)
 			&& !serverConnection.clientInitiatedConversation.isInSendResponseState()
-			&& (serverConnection.serverInitiatedConversation.isInPrepareResponseState()
-					|| serverConnection.serverInitiatedConversation.isInSendResponseState());
+			&& serverConnection.containsChatMessagesToBeSent();
 }
 bool shouldSendNonChatMessageResponse(ServerConnection &serverConnection,ServerFDSets &serverFDSets) {
 	return isSocketReadyForWriting(serverConnection.workingSocket,serverFDSets)
 			&& serverConnection.clientInitiatedConversation.isInSendResponseState()
 			&& !serverConnection.serverInitiatedConversation.isInSendResponseState();
 }
-UserActionResult handleChatMessage(ServerConnection &serverConnection) {
+void prepareChatMessageForClient(vector<string> &chatMessages,ServerSingleConversation &serverInitiatedConversation){
+	string messagesStr;
+	for (vector<string>::iterator itr = chatMessages.begin(); itr != chatMessages.end(); itr++) {
+		messagesStr.append(*itr);
+	}
+	prepareInfoMessageResponse(serverInitiatedConversation, RECEIVE_CHAT_MSG,
+			messagesStr);
+	chatMessages.clear();
+}
+UserActionResult handleChatMessageServerSending(ServerConnection &serverConnection) {
 	ServerSingleConversation &serverInitiatedConversation =
 			serverConnection.serverInitiatedConversation;
 	BufferedTextualProtocolMessage &outMessage =
 			serverInitiatedConversation.outMessage;
-	if (serverInitiatedConversation.isInPrepareResponseState()) {
-		prepareTextualMessageResponse(outMessage);
-		serverInitiatedConversation.advanceConversation();
+	if (!serverInitiatedConversation.isInSendResponseState()) { //If we haven't started sending yet we need to prepare the message
+		prepareChatMessageForClient(serverConnection.userMailBox->chatMessages,serverInitiatedConversation);
+		serverInitiatedConversation.state = SEND_RESPONSE;
 	}
 	UserActionResult userActionResult = sendData(serverConnection.workingSocket,
 			outMessage.buffer, outMessage.numRemainingBytes);
 	return userActionResult;
-
 }
 bool messageContainsNoBody(BufferedTextualProtocolMessage &message){
 	return (message.textualProtocolMessage.header.bodyLength == 0);
+}
+string getListOfLoggedInUsers(){
+	string listOfLoggedInUsers;
+	for (vector<LoggedInUserPair>::iterator it = loggedInUsersVector.begin();
+			it < loggedInUsersVector.end(); it++) {
+		LoggedInUserPair &loggedInUserPair = *it;
+		if (loggedInUserPair.second == true){
+			listOfLoggedInUsers.append(COMMA_LIST_SEPARATOR_STRING);
+			listOfLoggedInUsers.append(loggedInUserPair.first);
+		}
+	}
+	return listOfLoggedInUsers;
+}
+void handleShowOnlineUsersState(ServerSingleConversation &serverSingleConversation){
+	string loggedInUsers = getListOfLoggedInUsers();
+	prepareInfoMessageResponse(serverSingleConversation, SHOW_ONLINE_USERS,
+			loggedInUsers);
+}
+bool isUserOnline(Mailbox &userMailbox){
+	bool isOnline = false;
+	unsigned int indexInLoggedInUsersVector = userMailbox.indexInLoggedInUsersList;
+	if (indexInLoggedInUsersVector<loggedInUsersVector.size()){
+		LoggedInUserPair &loggedInUserPair = loggedInUsersVector.at(indexInLoggedInUsersVector);
+		isOnline = loggedInUserPair.second;
+	}
+
+	return isOnline;
+}
+void handleSendChatMessageState(ServerSingleConversation &serverSingleConversation, MailStore &userMailboxes, string &sender) {
+	MailMessage *&inputMailMessage =
+			serverSingleConversation.inMessage.textualProtocolMessage.body.messages.at(
+					0);
+	string responseMessage;
+	for (unsigned int i = 0; i < inputMailMessage->recipients.size(); i++) {
+		Mailbox &recipientMailbox = userMailboxes.at(
+				inputMailMessage->recipients.at(i));
+		if (isUserOnline(recipientMailbox)) {
+			string chatMessage = sender + ": "
+					+ inputMailMessage->messageText;
+			recipientMailbox.chatMessages.push_back(chatMessage);
+			responseMessage = "SENT";
+		} else {
+			//for each recipient we will clone the message
+			saveMail(recipientMailbox,sender,inputMailMessage);
+			responseMessage = "User is offline, message sent as mail";
+		}
+	}
+	delete inputMailMessage;
+	prepareInfoMessageResponse(serverSingleConversation, SEND_CHAT_MSG,
+			responseMessage);
 }
 
 UserActionResult handleUserInteraction(ServerConnection &serverConnection,
@@ -717,7 +784,7 @@ UserActionResult handleUserInteraction(ServerConnection &serverConnection,
 		//handle chat message sending only if the socket is ready for writing
 		//we aren't already sending something to the client on they're own request
 		//and we actually have something to send them (i.e. a chat message)
-		UserActionResult userActionResult = handleChatMessage(serverConnection);
+		UserActionResult userActionResult = handleChatMessageServerSending(serverConnection);
 		if (userActionResult.errorOccurred) {
 			return userActionResult;
 		}
@@ -781,6 +848,12 @@ UserActionResult handleUserInteraction(ServerConnection &serverConnection,
 		case GET_ATTACHMENT:
 			handleGetAttachmentState(clientInitiatedConversation,
 					loggedInUserMailbox);
+			break;
+		case SHOW_ONLINE_USERS:
+			handleShowOnlineUsersState(clientInitiatedConversation);
+			break;
+		case SEND_CHAT_MSG:
+			handleSendChatMessageState(clientInitiatedConversation, userMailboxes, serverConnection.loggedInUsername);
 			break;
 		default:
 			userActionResult.errorOccurred = true;
@@ -959,7 +1032,7 @@ int main(int argc, char* argv[]) {
 						serverConnection.serverInitiatedConversation.reset();
 						if (serverConnection.loggedInUsername != NO_LOGIN_STR) {
 							updateLoggedInUsersVector(
-									serverConnection.loggedInUsername, false);
+									serverConnection.userMailBox->indexInLoggedInUsersList, false);
 						}
 						connectionStore.erase(i);
 						numConnectedConnections--;

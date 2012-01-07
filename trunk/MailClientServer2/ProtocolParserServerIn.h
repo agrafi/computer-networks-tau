@@ -16,7 +16,7 @@ void parseGetMailMessageFromBuffer(const char *inBuffer, int expectedBodyLength,
 void parseDeleteMailMessageFromBuffer(const char *inBuffer, int expectedBodyLength,Body& bodyToBeFilled);
 void parseComposeMailMessageFromBuffer(const char *inBuffer, int expectedBodyLength,Body& bodyToBeFilled);
 void parseGetAttachmentTextualMessageFromBuffer(const char *inBuffer, int expectedBodyLength,Body& bodyToBeFilled);
-
+void parseSendChatMsgTextualMessageFromBuffer(const char *inBuffer, int expectedBodyLength,Body& bodyToBeFilled);
 
 
 #endif /* PROTOCOLPARSERIN_H_ */

@@ -7,6 +7,7 @@
 #include "ProtocolParserServerIn.h"
 #include "StringUtils.h"
 #include <cstring>
+const string SENT_WHILE_YOU_WERE_OFFLINE = "Message received while offline";
 void parseLoginMessageFromBuffer(const char *inBuffer, int expectedBodyLength,Body& bodyToBeFilled){
 	string username = getTextualField(PIPE_FIELD_SEPARATOR,inBuffer);
 	bodyToBeFilled.userLogin.username = username;
@@ -84,5 +85,22 @@ void parseGetAttachmentTextualMessageFromBuffer(const char *inBuffer, int expect
 	string attachmentNumStr (inBuffer,expectedAttachmentNumLength);
 	mailMessage->numberOfAttachments = parseStringToInt(attachmentNumStr);
 
+	bodyToBeFilled.messages.push_back(mailMessage);
+}
+void parseSendChatMsgTextualMessageFromBuffer(const char *inBuffer, int expectedBodyLength,Body& bodyToBeFilled){
+	MailMessage *mailMessage = new MailMessage;
+	int bodyRead = 0;
+	//parse recipients
+	string recipients = getTextualField(PIPE_FIELD_SEPARATOR,inBuffer);
+	bodyRead += recipients.length() +1;
+	inBuffer += recipients.length() + 1;
+	mailMessage->recipients = splitString(recipients,COMMA_LIST_SEPARATOR);
+	//subject
+	//we build the message assuming the users will be offline and if they're not the subject is just ignored
+	mailMessage->subject = SENT_WHILE_YOU_WERE_OFFLINE;
+	//parse messageText
+	int expectedTextLength = expectedBodyLength - bodyRead;
+	string chatMessageText (inBuffer,expectedTextLength);
+	mailMessage->messageText = chatMessageText;
 	bodyToBeFilled.messages.push_back(mailMessage);
 }
