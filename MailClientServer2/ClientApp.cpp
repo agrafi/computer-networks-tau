@@ -379,13 +379,10 @@ bool composeMailResponse(int c_sock) {
 bool recieveChatMessageFromServer(int c_sock){
 	Header header;
 	bool shouldContinue = getHeader(c_sock, header);
-	while (shouldContinue && header.workflowIdentifier == RECEIVE_CHAT_MSG){
-		receieveChatMessage(c_sock,header);
-		shouldContinue = getHeader(c_sock, header);
-	}
 	if (!shouldContinue){
 		return shouldContinue;
 	}
+	shouldContinue = receieveChatMessage(c_sock,header);
 	return shouldContinue;
 }
 bool composeMailRequest(int c_sock) {
@@ -450,10 +447,94 @@ bool showOnlineUsers(int c_sock, vector<string> &inputTokens){
 	}
 	return shouldContinue;
 }
-
-int mailLoop(int c_sock) {
+bool handleUserInput(int c_sock){
 	string inputString; // Where to store each line.
+	getline(cin, inputString); // Reads line into inputString
+	vector<string> inputTokens = splitFieldsBySpaceFromString(inputString);
+	if (inputTokens.empty()) {
+		return true;
+	}
+	trimString(inputTokens[0]);
+	WorkflowIdentifier workflowIdentifier = getWorkflowIdentifierEnum(
+			inputTokens[0]);
+	switch (workflowIdentifier) {
+	case SHOW_INBOX:
+		if (!showInbox(c_sock, inputTokens) != 0) {
+			cerr << "Error: show_inbox failed" << endl;
+			return false;
+		}
+		break;
+	case GET_MAIL:
+		if (!getMail(c_sock, inputTokens) != 0) {
+			cerr << "Error: get_mail failed" << endl;
+			return false;
+		}
+		break;
+	case GET_ATTACHMENT:
+		if (!getAttachment(c_sock, inputTokens) != 0) {
+			cerr << "Error: get_attachment failed" << endl;
+			return false;
+		}
+		break;
+	case DELETE_MAIL:
+		if (!deleteMail(c_sock, inputTokens) != 0) {
+			cerr << "Error: delete_mail failed" << endl;
+			return false;
+		}
+		break;
+	case COMPOSE_MAIL:
+		if (!composeMail(c_sock)) {
+			cerr << "Error: compose_mail failed" << endl;
+			return false;
+		}
+		break;
+	case SHOW_ONLINE_USERS:
+		if (!showOnlineUsers(c_sock,inputTokens)){
+			cerr << "Error: show_online_users failed" << endl;
+			return false;
+		}
+		break;
+	case SEND_CHAT_MSG:
+		//The chat message needs the unformatted input string as it preserves the spaces between the tokens
+		if (!sendChatMessage(c_sock, inputString, inputTokens) != 0) {
+			cerr << "Error: msg failed" << endl;
+			return false;
+		}
+		break;
+	case QUIT:
+		return quit(c_sock, inputTokens);
+	default: cerr << "Error: Usage 'SHOW_INBOX' or " << endl
+					<< "'GET_MAIL <mail_id>' or'" << endl
+					<< "'GET_ATTACHMENT <mail_id> <attachment_num> \"path\"' or" << endl
+					<< "'DELETE_MAIL <mail_id>' or" << endl
+					<< "'SHOW_ONLINE_USERS' or" << endl
+					<< "'MSG <username>: <message>' or" << endl
+					<< "'QUIT' or" << endl
+					<< "'COMPOSE\n'" << endl;break;
+	}
+	return true;
+}
+int mailLoop(int c_sock) {
+	fd_set readFromServerAndStdIn;
+	FD_ZERO(&readFromServerAndStdIn);
+	FD_SET(0,&readFromServerAndStdIn);
+	FD_SET(c_sock,&readFromServerAndStdIn);
 	while (true) {
+		if (select(c_sock + 1, &readFromServerAndStdIn, NULL, NULL, NULL)
+				== -1) {
+			perror("select");
+			return -1;
+		}
+		if (FD_ISSET(c_sock,&readFromServerAndStdIn)){
+			if (!recieveChatMessageFromServer(c_sock)) {
+				cerr << "Error: receive chat message from server failed" << endl;
+				return -1;
+			}
+
+		}
+		if (FD_ISSET(0,&readFromServerAndStdIn)){
+			handleUserInput(c_sock);
+		}
 		//TODO change from blocking on input from user to selecting on either stdin (read) or server (read)
 		//If server is ready then
 		/*
@@ -464,69 +545,6 @@ int mailLoop(int c_sock) {
 		 *
 		 * If stdin is ready (both can be ready) then we need to buffer the input line into inputString until \n (should be replaced by \0)
 		 */
-		getline(cin, inputString); // Reads line into inputString
-		vector<string> inputTokens = splitFieldsBySpaceFromString(inputString);
-		if (inputTokens.empty()) {
-			continue;
-		}
-		trimString(inputTokens[0]);
-		WorkflowIdentifier workflowIdentifier = getWorkflowIdentifierEnum(
-				inputTokens[0]);
-		switch (workflowIdentifier) {
-		case SHOW_INBOX:
-			if (!showInbox(c_sock, inputTokens) != 0) {
-				cerr << "Error: show_inbox failed" << endl;
-				return -1;
-			}
-			break;
-		case GET_MAIL:
-			if (!getMail(c_sock, inputTokens) != 0) {
-				cerr << "Error: get_mail failed" << endl;
-				return -1;
-			}
-			break;
-		case GET_ATTACHMENT:
-			if (!getAttachment(c_sock, inputTokens) != 0) {
-				cerr << "Error: get_attachment failed" << endl;
-				return -1;
-			}
-			break;
-		case DELETE_MAIL:
-			if (!deleteMail(c_sock, inputTokens) != 0) {
-				cerr << "Error: delete_mail failed" << endl;
-				return -1;
-			}
-			break;
-		case COMPOSE_MAIL:
-			if (!composeMail(c_sock)) {
-				cerr << "Error: compose_mail failed" << endl;
-				return -1;
-			}
-			break;
-		case SHOW_ONLINE_USERS:
-			if (!showOnlineUsers(c_sock,inputTokens)){
-				cerr << "Error: show_online_users failed" << endl;
-				return -1;
-			}
-			break;
-		case SEND_CHAT_MSG:
-			//The chat message needs the unformatted input string as it preserves the spaces between the tokens
-			if (!sendChatMessage(c_sock, inputString, inputTokens) != 0) {
-				cerr << "Error: msg failed" << endl;
-				return -1;
-			}
-			break;
-		case QUIT:
-			return quit(c_sock, inputTokens);
-		default: cerr << "Error: Usage 'SHOW_INBOX' or " << endl
-						<< "'GET_MAIL <mail_id>' or'" << endl
-						<< "'GET_ATTACHMENT <mail_id> <attachment_num> \"path\"' or" << endl
-						<< "'DELETE_MAIL <mail_id>' or" << endl
-						<< "'SHOW_ONLINE_USERS' or" << endl
-						<< "'MSG <username>: <message>' or" << endl
-						<< "'QUIT' or" << endl
-						<< "'COMPOSE\n'" << endl;break;
-		}
 	}
 	return -1;
 }
