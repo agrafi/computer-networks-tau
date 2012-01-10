@@ -29,7 +29,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <iomanip>
+#include <sys/stat.h>
 
+#define MAX_BUFFER (1024*1024)
 using namespace std;
 
 void disconnect_check(int sock, struct addrinfo *servinfo) {
@@ -310,10 +312,22 @@ bool saveAttachmentToDisk(string &attachmentPath, char * bodyInBuffer,
 	outfile.close();
 	return true;
 }
+long getAttachmentSizeFromDisk(string &attachmentPath)
+{
+	struct stat filestatus;
+
+	if (-1 == stat( attachmentPath.c_str(), &filestatus ))
+	{
+		return 0;
+	}
+
+	return filestatus.st_size;
+}
 string readAttachmentFromDisk(string &attachmentPath){
 	cleanInputPathForFullPathNoQuotes(attachmentPath);
 
 	ifstream in(attachmentPath.c_str(),ifstream::binary);
+
 	string contents((istreambuf_iterator<char>(in)), istreambuf_iterator<char>());
 	return contents;
 }
@@ -408,19 +422,54 @@ bool composeMailRequest(int c_sock) {
 	//if c_sock is ready for reading we should call recieveChatMessageFromServer [I prepared it for you]
 	//if c_sock is ready for writing we should send the relevant chunk of the attachment we're currently uploading
 	vector<string> attachmentsVec = splitString(attachments,COMMA_LIST_SEPARATOR);
+	unsigned int bodyLength = 0;
 	for (unsigned int i=0;i<attachmentsVec.size();i++){
-		string curFile = readAttachmentFromDisk(attachmentsVec[i]);
-		string hexaCurFileSize = parseIntToHexaString(curFile.size(),BINARY_SIZE_FIELD_LENGTH);
-		body+= hexaCurFileSize+curFile;
+		string hexaCurFileSize = parseIntToHexaString(getAttachmentSizeFromDisk(attachmentsVec[i]),BINARY_SIZE_FIELD_LENGTH);
+		bodyLength += hexaCurFileSize.size() + hexaCurFileSize.size();
+
 	}
 	//GET HEADER
-	unsigned int bodyLength = body.length();
+	//bodyLength = body.length();
 	string outputHeaderString = parseOutputStringFromHeader(COMPOSE_MAIL,bodyLength);
-	unsigned int messageLength = body.length()+outputHeaderString.length();
+	unsigned int messageLength = outputHeaderString.length();
 	char *outBuffer = new char[messageLength];
-	outputStringToBuffer(outputHeaderString+body,outBuffer);
+	outputStringToBuffer(outputHeaderString,outBuffer);
 	bool shouldContinue = sendAllData(c_sock,outBuffer,&messageLength);
 	delete[] outBuffer;
+
+	// Return on error
+	if (!shouldContinue)
+		return shouldContinue;
+
+	body.clear();
+	for (unsigned int i=0;i<attachmentsVec.size();i++){
+		char buffer[MAX_BUFFER] = {0};
+		unsigned int nleft = getAttachmentSizeFromDisk(attachmentsVec[i]);
+		unsigned int nread = 0;
+
+		// string curFile = readAttachmentFromDisk(attachmentsVec[i]);
+		// Read File from disk in chunk by chunk and send it over socket
+		cleanInputPathForFullPathNoQuotes(attachmentsVec[i]);
+
+		// Open file for binary read
+		ifstream myfile(attachmentsVec[i].c_str(),ifstream::binary);
+
+		// Send file size
+		string hexaCurFileSize = parseIntToHexaString(getAttachmentSizeFromDisk(attachmentsVec[i]),BINARY_SIZE_FIELD_LENGTH);
+		unsigned int hexaCurFileSizeLength = hexaCurFileSize.size();
+		shouldContinue = sendAllData(c_sock,(char*)hexaCurFileSize.c_str(),&hexaCurFileSizeLength);
+
+		// Iterate over file while it's not EOF
+		while(myfile.good())
+		{
+			myfile.read(buffer, MAX_BUFFER);
+			nread = myfile.gcount();
+			shouldContinue = sendAllDataFullDuplex(c_sock,buffer,&nread, recieveChatMessageFromServer);
+
+			nleft -= nread;
+		}
+	}
+
 	return shouldContinue;
 }
 bool composeMail(int c_sock){
