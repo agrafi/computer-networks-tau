@@ -159,18 +159,6 @@ typedef struct ServerConnectionStruct {
 				serverInitiatedConversation.isInSendResponseState());
 	}
 } ServerConnection;
-typedef struct FDPairSetsStruct {
-	fd_set read;
-	fd_set write;
-	void init(){
-		FD_ZERO(&read);
-		FD_ZERO(&write);
-	}
-	void copy(FDPairSetsStruct &other){
-		read = other.read;
-		write = other.write;
-	}
-} FDPairSets;
 typedef struct ServerFDSetsStruct {
 	FDPairSets fDPairSetsCurSelectResponse;
 	FDPairSets fDPairSetsNextSelectResponse;
