@@ -410,37 +410,31 @@ bool composeMailRequest(int c_sock) {
 							messageText + PIPE_FIELD_SEPARATOR +
 							attachments + PIPE_FIELD_SEPARATOR;
 
-	//READ FILES
-	//TODO change file reading so that it happens in chunks
-	//We should iterate over the files and see how big they are
-	//Since in addition to the file contents we also send the file size in hexa then the actual length of the body of the message is
-	// for (file f in files)
-	//		file.size + parseIntToHexaString(file.size,BINARY_SIZE_FIELD_LENGTH);
-	//Then we should do the get header and only send it
-	//lastly we should iterate over the files and read chuncks of the attachments and
-	//perform select on c_sock (reading chat message) and c_sock (sending files)
-	//if c_sock is ready for reading we should call recieveChatMessageFromServer [I prepared it for you]
-	//if c_sock is ready for writing we should send the relevant chunk of the attachment we're currently uploading
 	vector<string> attachmentsVec = splitString(attachments,COMMA_LIST_SEPARATOR);
-	unsigned int bodyLength = 0;
+	unsigned int bodyLength = body.length();//The length is the textual part and the attachments we will now accumulate
+	//Read attachments length
 	for (unsigned int i=0;i<attachmentsVec.size();i++){
-		string hexaCurFileSize = parseIntToHexaString(getAttachmentSizeFromDisk(attachmentsVec[i]),BINARY_SIZE_FIELD_LENGTH);
-		bodyLength += hexaCurFileSize.size() + hexaCurFileSize.size();
-
+		long curFileSize = getAttachmentSizeFromDisk(attachmentsVec[i]);
+		string hexaCurFileSize = parseIntToHexaString(curFileSize,BINARY_SIZE_FIELD_LENGTH);
+		bodyLength += curFileSize + hexaCurFileSize.size();
 	}
 	//GET HEADER
-	//bodyLength = body.length();
 	string outputHeaderString = parseOutputStringFromHeader(COMPOSE_MAIL,bodyLength);
 	unsigned int messageLength = outputHeaderString.length();
-	char *outBuffer = new char[messageLength];
-	outputStringToBuffer(outputHeaderString,outBuffer);
-	bool shouldContinue = sendAllData(c_sock,outBuffer,&messageLength);
-	delete[] outBuffer;
+	//SEND HEADER
+	bool shouldContinue = sendMessageToServer(c_sock,outputHeaderString);
 
 	// Return on error
 	if (!shouldContinue)
 		return shouldContinue;
 
+	//Send textual body of message
+	shouldContinue = sendMessageToServer(c_sock,body);
+	// Return on error
+	if (!shouldContinue)
+		return shouldContinue;
+
+	//SEND ATTACHMENTS IN CHUNKS
 	body.clear();
 	for (unsigned int i=0;i<attachmentsVec.size();i++){
 		char buffer[MAX_BUFFER] = {0};
