@@ -414,6 +414,7 @@ bool composeMailRequest(int c_sock) {
 	unsigned int bodyLength = body.length();//The length is the textual part and the attachments we will now accumulate
 	//Read attachments length
 	for (unsigned int i=0;i<attachmentsVec.size();i++){
+		cleanInputPathForFullPathNoQuotes(attachmentsVec[i]);
 		long curFileSize = getAttachmentSizeFromDisk(attachmentsVec[i]);
 		string hexaCurFileSize = parseIntToHexaString(curFileSize,BINARY_SIZE_FIELD_LENGTH);
 		bodyLength += curFileSize + hexaCurFileSize.size();
@@ -435,15 +436,12 @@ bool composeMailRequest(int c_sock) {
 		return shouldContinue;
 
 	//SEND ATTACHMENTS IN CHUNKS
-	body.clear();
 	for (unsigned int i=0;i<attachmentsVec.size();i++){
 		char buffer[MAX_BUFFER] = {0};
 		unsigned int nleft = getAttachmentSizeFromDisk(attachmentsVec[i]);
 		unsigned int nread = 0;
 
-		// string curFile = readAttachmentFromDisk(attachmentsVec[i]);
 		// Read File from disk in chunk by chunk and send it over socket
-		cleanInputPathForFullPathNoQuotes(attachmentsVec[i]);
 
 		// Open file for binary read
 		ifstream myfile(attachmentsVec[i].c_str(),ifstream::binary);
@@ -576,18 +574,10 @@ int mailLoop(int c_sock) {
 
 		}
 		if (FD_ISSET(0,&readFromServerAndStdIn)){
-			handleUserInput(c_sock);
-		}
-		//TODO change from blocking on input from user to selecting on either stdin (read) or server (read)
-		//If server is ready then
-		/*
-		 * 	if (!recieveChatMessageFromServer(c_sock)) {
-				cerr << "Error: receive chat message from server failed" << endl;
+			if (!handleUserInput(c_sock)){
 				return -1;
 			}
-		 *
-		 * If stdin is ready (both can be ready) then we need to buffer the input line into inputString until \n (should be replaced by \0)
-		 */
+		}
 	}
 	return -1;
 }
