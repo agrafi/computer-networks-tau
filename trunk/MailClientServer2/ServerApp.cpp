@@ -183,7 +183,6 @@ typedef struct ServerFDSetsStruct {
 		nextfdmax = 0;
 	}
 } ServerFDSets;
-typedef int (*sendRecvFunc)(int socket, void *buffer, size_t size, int flags);
 typedef pair<string, Mailbox> MailboxUserPair;
 typedef map<string, Mailbox> MailStore;
 typedef pair<int, ServerConnection> ConnectionStorePair;
@@ -223,31 +222,21 @@ bool authenticationPassed(Body &body, MailStore &userMailboxes) {
 	return authenticationPassed;
 }
 
-UserActionResult sendRecieveData(sendRecvFunc, int workingSocket, char *&buffer,
-		unsigned int &numRemainingBytes) {
-	UserActionResult result = PROBLEM_RESULT;
-//	*sendRecvFunc(workingSocket,(void *)buffer,numRemainingBytes,0);
-	int retValue = workingSocket;
-	if (retValue != -1) {//If no problem has occurred
-		result.errorOccurred = false;
-		//We can cast as an unsigned int because recv is supposed to return -1,0 or a positive number
-		if (((unsigned int) retValue) == numRemainingBytes) {
-			numRemainingBytes = 0;
-			result.finishedAccordingToPlan = true;
-		} else {
-			numRemainingBytes -= retValue;
-		}
-	}
-	return result;
+bool returnValueSignalsError(int retValue){
+	//If the errno is EAGAIN then this is no error since we just had nothing in the socket
+	//This can happen if we try to read in two stages from the socket but there was only enough data for the first stage
+	return (retValue == 0) || ( (retValue == -1) && ( errno != EAGAIN ) );
 }
 UserActionResult sendData(int workingSocket, char *&buffer,
 		unsigned int &numRemainingBytes) {
-	//TODO see why the following line doesn't compile
-	//return sendRecieveData(&send,buffer,numRemainingBytes);
 	UserActionResult result = PROBLEM_RESULT;
-	int retValue = send(workingSocket, buffer, numRemainingBytes, 0);
-	if (retValue != -1) {//If no problem has occurred
-		result.errorOccurred = false;
+	int retValue = send(workingSocket, buffer, numRemainingBytes, MSG_DONTWAIT);
+	if (returnValueSignalsError(retValue)){
+		return result;
+	}
+	//If no problem has occurred
+	result.errorOccurred = false;
+	if (retValue != -1) {
 		//We can cast as an unsigned int because recv is supposed to return -1,0 or a positive number
 		if (((unsigned int) retValue) == numRemainingBytes) {
 			numRemainingBytes = 0;
@@ -261,19 +250,21 @@ UserActionResult sendData(int workingSocket, char *&buffer,
 UserActionResult receiveData(int workingSocket, char *&buffer,
 		unsigned int &numRemainingBytes) {
 	UserActionResult result = PROBLEM_RESULT;
-	int retValue = recv(workingSocket, buffer, numRemainingBytes, 0);
-	if (retValue == -1 || retValue == 0 ){
+	int retValue = recv(workingSocket, buffer, numRemainingBytes, MSG_DONTWAIT);
+	if (returnValueSignalsError(retValue)){
 		//We interpret this as an error because the user is supposed to send QUIT message before quitting
 		return result;
 	}
 	//If no problem has occurred
 	result.errorOccurred = false;
 	//We can cast as an unsigned int because recv is supposed to return -1,0 or a positive number
-	if (((unsigned int) retValue) == numRemainingBytes) {
-		numRemainingBytes = 0;
-		result.finishedAccordingToPlan = true;
-	} else {
-		numRemainingBytes -= retValue;
+	if (retValue != -1 ){
+		if (((unsigned int) retValue) == numRemainingBytes) {
+			numRemainingBytes = 0;
+			result.finishedAccordingToPlan = true;
+		} else {
+			numRemainingBytes -= retValue;
+		}
 	}
 	return result;
 }
@@ -946,6 +937,28 @@ void printScheduledSockets(ServerFDSets &serverFDSets,ConnectionStore &connectio
 bool hasMaxNumberOfConnectionsBeenReached(int numConnectedConnections){
 	return (numConnectedConnections == MAX_PERMITTED_USERS);
 }
+void deleteUserConnection(ServerConnection &serverConnection){
+	//Kill the conversation
+	TEMP_FAILURE_RETRY(close (serverConnection.workingSocket));
+	//We do this as to overcome temproray issues with closing the socket
+	serverConnection.clientInitiatedConversation.reset();
+	serverConnection.serverInitiatedConversation.reset();
+	if (serverConnection.loggedInUsername != NO_LOGIN_STR) {
+		updateLoggedInUsersVector(
+				serverConnection.userMailBox->indexInLoggedInUsersList, false);
+		serverConnection.userMailBox->activeSocket = 0;
+		serverConnection.userMailBox = NULL;
+	}
+}
+void deleteConnectionStore(ConnectionStore &connectionStore){
+	for (ConnectionStore::iterator iter = connectionStore.begin() ; iter != connectionStore.end() ; iter++){
+		ServerConnection &serverConnection = iter->second;
+		int socket = serverConnection.workingSocket;
+		deleteUserConnection(serverConnection);
+		connectionStore.erase(socket);
+	}
+
+}
 int main(int argc, char* argv[]) {
 	ArgumentsServer arguments;
 	bool successfullyParsedArgs = parseArgumentsServer(argc, argv, arguments);
@@ -1034,21 +1047,9 @@ int main(int argc, char* argv[]) {
 					UserActionResult userActionResult = handleUserSession(
 							serverConnection, userMailboxes,serverFDSets);
 					if (userActionResult.errorOccurred) {
-						//Kill the conversation
-						TEMP_FAILURE_RETRY(close (i));
-						//We do this as to overcome temproray issues with closing the socket
-						serverConnection.clientInitiatedConversation.reset();
-						serverConnection.serverInitiatedConversation.reset();
-						if (serverConnection.loggedInUsername != NO_LOGIN_STR) {
-							updateLoggedInUsersVector(
-									serverConnection.userMailBox->indexInLoggedInUsersList, false);
-							serverConnection.userMailBox->activeSocket = 0;
-							serverConnection.userMailBox = NULL;
-						}
+						deleteUserConnection(serverConnection);
 						connectionStore.erase(i);
 						numConnectedConnections--;
-//						removeSocketFromReading(i,serverFDSets);
-//						removeSocketFromWriting(i,serverFDSets);
 					} else {
 						scheduleSocketForReading(serverConnection.workingSocket,serverFDSets);
 						//If we need to send something we schedule it for sending
@@ -1074,6 +1075,7 @@ int main(int argc, char* argv[]) {
 	}
 	TEMP_FAILURE_RETRY(close (listeningServerSocket));
 	//We do this as to overcome temproray issues with closing the socket
+	deleteConnectionStore(connectionStore);
 	deleteMailBoxes(userMailboxes);
 	return 0;
 }
