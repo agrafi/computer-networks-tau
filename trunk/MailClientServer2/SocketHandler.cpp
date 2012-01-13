@@ -90,4 +90,57 @@ bool sendAllData(int workingServerSocket, char *buffer,unsigned int *demandedNum
 	*demandedNumOfBytes = total; // return number actually sent here
 	return (numBytesCurrentlySent != -1); // return -1 on failure, 0 on success
 }
+bool returnValueSignalsError(int retValue){
+	//If the errno is EAGAIN then this is no error since we just had nothing in the socket
+	//This can happen if we try to read in two stages from the socket but there was only enough data for the first stage
+	return (retValue == 0) || ( (retValue == -1) && ( errno != EAGAIN ) );
+}
+ActionResult sendData(int workingSocket, char *&buffer,
+		unsigned int &numRemainingBytes) {
+	ActionResult result = PROBLEM_RESULT;
+	int retValue = send(workingSocket, buffer, numRemainingBytes, MSG_DONTWAIT);
+	if (returnValueSignalsError(retValue)){
+		return result;
+	}
+	//If no problem has occurred
+	result.errorOccurred = false;
+	if (retValue != -1) {
+		//We can cast as an unsigned int because recv is supposed to return -1,0 or a positive number
+		if (((unsigned int) retValue) == numRemainingBytes) {
+			numRemainingBytes = 0;
+			result.finishedAllWantedBytes = true;
+		} else {
+			//We need to advance the buffer pointer so that in the next delivery (which is needed since we did not finish)
+			//it will be in the right location
+			buffer += retValue;
+			numRemainingBytes -= retValue;
+		}
+	}
+	return result;
+}
+ActionResult receiveData(int workingSocket, char *&buffer,
+		unsigned int &numRemainingBytes) {
+	ActionResult result = PROBLEM_RESULT;
+	int retValue = recv(workingSocket, buffer, numRemainingBytes, MSG_DONTWAIT);
+	if (returnValueSignalsError(retValue)){
+		//We interpret this as an error because according to the protocol there should be an orderly
+		//termination of the conversation
+		return result;
+	}
+	//If no problem has occurred
+	result.errorOccurred = false;
+	//We can cast as an unsigned int because recv is supposed to return -1,0 or a positive number
+	if (retValue != -1 ){
+		if (((unsigned int) retValue) == numRemainingBytes) {
+			numRemainingBytes = 0;
+			result.finishedAllWantedBytes = true;
+		} else {
+			//We need to advance the buffer pointer so that in the next delivery (which is needed since we did not finish)
+			//it will be in the right location
+			buffer += retValue;
+			numRemainingBytes -= retValue;
+		}
+	}
+	return result;
+}
 
