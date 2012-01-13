@@ -558,10 +558,10 @@ bool handleUserInput(int c_sock,bool &shouldQuit){
 int mailLoop(int c_sock) {
 	fd_set readFromServerAndStdIn;
 	FD_ZERO(&readFromServerAndStdIn);
-	FD_SET(0,&readFromServerAndStdIn);
-	FD_SET(c_sock,&readFromServerAndStdIn);
 	bool shouldQuit = false;
 	while (true) {
+		FD_SET(0,&readFromServerAndStdIn);
+		FD_SET(c_sock,&readFromServerAndStdIn);
 		if (select(c_sock + 1, &readFromServerAndStdIn, NULL, NULL, NULL)
 				== -1) {
 			perror("select");
