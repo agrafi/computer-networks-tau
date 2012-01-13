@@ -28,6 +28,16 @@ typedef struct FDPairSetsStruct {
 		write = other.write;
 	}
 } FDPairSets;
+typedef struct ActionResultStruct {
+	//Defines whether sent/received all wanted bytes
+	bool finishedAllWantedBytes;
+	//Defines whether there was an error in the stage
+	bool errorOccurred;
+	bool shouldContinue() {
+		return finishedAllWantedBytes && !errorOccurred;
+	}
+} ActionResult;
+const ActionResult PROBLEM_RESULT = { false, true };
 
 const int defaultPort = 6423;
 const string defaultPortStr = "6423";
@@ -35,6 +45,10 @@ bool receiveAllData(int workingServerSocket, char *buffer, int demandedNumOfByte
 bool sendAllData(int workingServerSocket, char *buffer, unsigned int *demandedNumOfBytes);
 typedef bool (*pfnReceiveCallback)(int);
 bool sendAllDataFullDuplex(int workingServerSocket, char *buffer,unsigned int *demandedNumOfBytes, pfnReceiveCallback pCallback);
+//Note this method may change the location to which buffer points at
+ActionResult sendData(int workingSocket, char *&buffer,unsigned int &numRemainingBytes);
+//Note this method may change the location to which buffer points at
+ActionResult receiveData(int workingSocket, char *&buffer,unsigned int &numRemainingBytes);
 
 
 #endif /* SOCKETHANDLER_H_ */
