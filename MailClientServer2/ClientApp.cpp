@@ -421,7 +421,6 @@ bool composeMailRequest(int c_sock) {
 	}
 	//GET HEADER
 	string outputHeaderString = parseOutputStringFromHeader(COMPOSE_MAIL,bodyLength);
-	unsigned int messageLength = outputHeaderString.length();
 	//SEND HEADER
 	bool shouldContinue = sendMessageToServer(c_sock,outputHeaderString);
 
@@ -488,7 +487,7 @@ bool showOnlineUsers(int c_sock, vector<string> &inputTokens){
 	}
 	return shouldContinue;
 }
-bool handleUserInput(int c_sock){
+bool handleUserInput(int c_sock,bool &shouldQuit){
 	string inputString; // Where to store each line.
 	getline(cin, inputString); // Reads line into inputString
 	vector<string> inputTokens = splitFieldsBySpaceFromString(inputString);
@@ -543,7 +542,8 @@ bool handleUserInput(int c_sock){
 		}
 		break;
 	case QUIT:
-		return quit(c_sock, inputTokens);
+		shouldQuit = true;
+		return quit(c_sock, inputTokens);//no need to break here since we're returning either way
 	default: cerr << "Error: Usage 'SHOW_INBOX' or " << endl
 					<< "'GET_MAIL <mail_id>' or'" << endl
 					<< "'GET_ATTACHMENT <mail_id> <attachment_num> \"path\"' or" << endl
@@ -560,6 +560,7 @@ int mailLoop(int c_sock) {
 	FD_ZERO(&readFromServerAndStdIn);
 	FD_SET(0,&readFromServerAndStdIn);
 	FD_SET(c_sock,&readFromServerAndStdIn);
+	bool shouldQuit = false;
 	while (true) {
 		if (select(c_sock + 1, &readFromServerAndStdIn, NULL, NULL, NULL)
 				== -1) {
@@ -574,7 +575,7 @@ int mailLoop(int c_sock) {
 
 		}
 		if (FD_ISSET(0,&readFromServerAndStdIn)){
-			if (!handleUserInput(c_sock)){
+			if (!handleUserInput(c_sock,shouldQuit) || shouldQuit){
 				return -1;
 			}
 		}

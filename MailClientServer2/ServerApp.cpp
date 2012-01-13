@@ -26,17 +26,6 @@
 #include <errno.h>
 //working with erros
 using namespace std;
-typedef struct UserActionResultStruct {
-	//Defines whether the stage has finished according To Plan
-	//(for example received all expected bytes)
-	bool finishedAccordingToPlan;
-	//Defines whether there was an error in the stage
-	bool errorOccurred;
-	bool shouldContinue() {
-		return finishedAccordingToPlan && !errorOccurred;
-	}
-} UserActionResult;
-const UserActionResult PROBLEM_RESULT = { false, true };
 const int MAX_PERMITTED_USERS = 1023;
 const string NO_LOGIN_STR = "NO_LOGIN";
 typedef pair<string, bool> LoggedInUserPair;
@@ -63,20 +52,23 @@ enum ConnectionState {
 };
 typedef struct BufferedTextualProtocolMessageStruct {
 	unsigned int numRemainingBytes;
-	char *buffer;
+	char *startLocationBuffer;//Points to the begining of the message
+	char *workingLocationBuffer;//Points to the current working location of the message
 	TextualProtocolMessage textualProtocolMessage;
 	void clearBuffer() {
-		if (buffer != NULL) {
-			delete[] buffer;
-			buffer = NULL;
+		if (startLocationBuffer != NULL) {
+			delete[] startLocationBuffer;
+			startLocationBuffer = NULL;
+			workingLocationBuffer = NULL;
 		}
 	}
 	void initBuffer(int numBytes) {
 		numRemainingBytes = numBytes;
-		buffer = new char[numBytes];
+		startLocationBuffer = new char[numBytes];
+		workingLocationBuffer = startLocationBuffer;
 	}
 	bool bufferUninitialized() {
-		return buffer == NULL;
+		return startLocationBuffer == NULL;
 	}
 	void reset() {
 		numRemainingBytes = 0;
@@ -146,7 +138,8 @@ typedef struct ServerConnectionStruct {
 		userMailBox = NULL;
 		BufferedTextualProtocolMessage dummyMessage;
 		dummyMessage.numRemainingBytes = 0;
-		dummyMessage.buffer = NULL;
+		dummyMessage.startLocationBuffer = NULL;
+		dummyMessage.workingLocationBuffer = NULL;
 		clientInitiatedConversation.state = READ_HEADER;
 		serverInitiatedConversation.state = READ_HEADER;
 		clientInitiatedConversation.inMessage = dummyMessage;
@@ -222,53 +215,7 @@ bool authenticationPassed(Body &body, MailStore &userMailboxes) {
 	return authenticationPassed;
 }
 
-bool returnValueSignalsError(int retValue){
-	//If the errno is EAGAIN then this is no error since we just had nothing in the socket
-	//This can happen if we try to read in two stages from the socket but there was only enough data for the first stage
-	return (retValue == 0) || ( (retValue == -1) && ( errno != EAGAIN ) );
-}
-UserActionResult sendData(int workingSocket, char *&buffer,
-		unsigned int &numRemainingBytes) {
-	UserActionResult result = PROBLEM_RESULT;
-	int retValue = send(workingSocket, buffer, numRemainingBytes, MSG_DONTWAIT);
-	if (returnValueSignalsError(retValue)){
-		return result;
-	}
-	//If no problem has occurred
-	result.errorOccurred = false;
-	if (retValue != -1) {
-		//We can cast as an unsigned int because recv is supposed to return -1,0 or a positive number
-		if (((unsigned int) retValue) == numRemainingBytes) {
-			numRemainingBytes = 0;
-			result.finishedAccordingToPlan = true;
-		} else {
-			numRemainingBytes -= retValue;
-		}
-	}
-	return result;
-}
-UserActionResult receiveData(int workingSocket, char *&buffer,
-		unsigned int &numRemainingBytes) {
-	UserActionResult result = PROBLEM_RESULT;
-	int retValue = recv(workingSocket, buffer, numRemainingBytes, MSG_DONTWAIT);
-	if (returnValueSignalsError(retValue)){
-		//We interpret this as an error because the user is supposed to send QUIT message before quitting
-		return result;
-	}
-	//If no problem has occurred
-	result.errorOccurred = false;
-	//We can cast as an unsigned int because recv is supposed to return -1,0 or a positive number
-	if (retValue != -1 ){
-		if (((unsigned int) retValue) == numRemainingBytes) {
-			numRemainingBytes = 0;
-			result.finishedAccordingToPlan = true;
-		} else {
-			numRemainingBytes -= retValue;
-		}
-	}
-	return result;
-}
-UserActionResult receiveHeader(ServerConnection &serverConnection) {
+ActionResult receiveHeader(ServerConnection &serverConnection) {
 	ServerSingleConversation &clientInitiatedConversation =
 			serverConnection.clientInitiatedConversation;
 	BufferedTextualProtocolMessage &inMessage =
@@ -277,21 +224,21 @@ UserActionResult receiveHeader(ServerConnection &serverConnection) {
 		//we need to initialize
 		inMessage.initBuffer(FIXED_HEADER_SIZE);
 	}
-	UserActionResult result = receiveData(serverConnection.workingSocket,
-			inMessage.buffer, inMessage.numRemainingBytes);
+	ActionResult result = receiveData(serverConnection.workingSocket,
+			inMessage.workingLocationBuffer, inMessage.numRemainingBytes);
 	if (result.errorOccurred) {
 		inMessage.clearBuffer();
 	}
 	if (result.shouldContinue()) {
-		parseHeaderFromBuffer(inMessage.buffer,
+		parseHeaderFromBuffer(inMessage.startLocationBuffer,
 				inMessage.textualProtocolMessage.header);
 		inMessage.clearBuffer();
 	}
 	return result;
 }
-UserActionResult isExpectedHeader(ServerConnection &serverConnection,
+ActionResult isExpectedHeader(ServerConnection &serverConnection,
 		WorkflowIdentifier expectedWorkflowIdentifier) {
-	UserActionResult result = receiveHeader(serverConnection);
+	ActionResult result = receiveHeader(serverConnection);
 	if (result.shouldContinue()) {
 		ServerSingleConversation &clientInitiatedConversation =
 				serverConnection.clientInitiatedConversation;
@@ -310,7 +257,7 @@ void prepareTextualMessageResponse(BufferedTextualProtocolMessage &outMessage) {
 	string outString = parseBufferFromTextualMessage(textualProtocolMessage);
 	unsigned int messageSize = outString.length();
 	outMessage.initBuffer(messageSize);
-	outputStringToBuffer(outString, outMessage.buffer);
+	outputStringToBuffer(outString, outMessage.startLocationBuffer);
 }
 void prepareInfoMessageResponse(
 		ServerSingleConversation &serverSingleConversation,
@@ -328,8 +275,8 @@ void prepareConnectResponse(
 	prepareInfoMessageResponse(serverSingleConversation, CONNECT_TO_SERVER,
 			"Welcome!");
 }
-UserActionResult handleConnectRequest(ServerConnection &serverConnection) {
-	UserActionResult userActionResult = isExpectedHeader(serverConnection,
+ActionResult handleConnectRequest(ServerConnection &serverConnection) {
+	ActionResult userActionResult = isExpectedHeader(serverConnection,
 			CONNECT_TO_SERVER);
 	return userActionResult;
 }
@@ -367,8 +314,8 @@ void scheduleSocketForReading(int workingSocket,ServerFDSets &serverFDSets) {
 void scheduleSocketForWriting(int workingSocket,ServerFDSets &serverFDSets) {
 	scheduleSocket(workingSocket, &serverFDSets.fDPairSetsNextSelectResponse.write,serverFDSets.nextfdmax);
 }
-UserActionResult handleConnectState(ServerConnection &serverConnection,ServerFDSets &serverFDSets) {
-	UserActionResult userActionResult = PROBLEM_RESULT;
+ActionResult handleConnectState(ServerConnection &serverConnection,ServerFDSets &serverFDSets) {
+	ActionResult userActionResult = PROBLEM_RESULT;
 	ServerSingleConversation &clientInitiatedConversation =
 			serverConnection.clientInitiatedConversation;
 	if (isSocketReadyForReading(serverConnection.workingSocket,serverFDSets)
@@ -388,7 +335,7 @@ UserActionResult handleConnectState(ServerConnection &serverConnection,ServerFDS
 			&& isSocketReadyForWriting(serverConnection.workingSocket,serverFDSets)) {
 		//We know we can send data without fear of a "serverInitiatedConversation" because it is blocked at this phase
 		userActionResult = sendData(serverConnection.workingSocket,
-				clientInitiatedConversation.outMessage.buffer,
+				clientInitiatedConversation.outMessage.workingLocationBuffer,
 				clientInitiatedConversation.outMessage.numRemainingBytes);
 		if (userActionResult.shouldContinue()) {
 			serverConnection.connectionState = LOGIN_S;
@@ -407,9 +354,9 @@ void prepareLoginResponse(ServerSingleConversation &serverSingleConversation,
 	}
 	prepareInfoMessageResponse(serverSingleConversation, LOGIN, infoMessage);
 }
-UserActionResult handleLoginReadHeaderState(
+ActionResult handleLoginReadHeaderState(
 		ServerConnection &serverConnection) {
-	UserActionResult userActionResult = isExpectedHeader(serverConnection,
+	ActionResult userActionResult = isExpectedHeader(serverConnection,
 			LOGIN);
 	return userActionResult;
 }
@@ -420,7 +367,7 @@ void updateLoggedInUsersVector(unsigned int indexInLoggedInUsersVector, bool log
 	}
 }
 
-UserActionResult handleLoginReadBodyState(ServerConnection &serverConnection,
+ActionResult handleLoginReadBodyState(ServerConnection &serverConnection,
 		MailStore &userMailboxes) {
 	ServerSingleConversation &clientInitiatedConversation =
 			serverConnection.clientInitiatedConversation;
@@ -430,8 +377,8 @@ UserActionResult handleLoginReadBodyState(ServerConnection &serverConnection,
 		Header &header = inMessage.textualProtocolMessage.header;
 		inMessage.initBuffer(header.bodyLength);
 	}
-	UserActionResult userActionResult = receiveData(
-			serverConnection.workingSocket, inMessage.buffer,
+	ActionResult userActionResult = receiveData(
+			serverConnection.workingSocket, inMessage.workingLocationBuffer,
 			inMessage.numRemainingBytes);
 	if (userActionResult.errorOccurred) {
 		inMessage.clearBuffer();
@@ -439,7 +386,7 @@ UserActionResult handleLoginReadBodyState(ServerConnection &serverConnection,
 	if (userActionResult.shouldContinue()) {
 		bool loginSucceeded = false;
 		TextualProtocolMessage &message = inMessage.textualProtocolMessage;
-		parseTextualBasedBodyFromBuffer(inMessage.buffer, message.header,
+		parseTextualBasedBodyFromBuffer(inMessage.startLocationBuffer, message.header,
 				message.body);
 		loginSucceeded = authenticationPassed(message.body, userMailboxes);
 		if (loginSucceeded) {
@@ -458,9 +405,9 @@ UserActionResult handleLoginReadBodyState(ServerConnection &serverConnection,
 	}
 	return userActionResult;
 }
-UserActionResult handleLoginRequest(ServerConnection &serverConnection,
+ActionResult handleLoginRequest(ServerConnection &serverConnection,
 		MailStore &userMailboxes) {
-	UserActionResult userActionResult = PROBLEM_RESULT;
+	ActionResult userActionResult = PROBLEM_RESULT;
 	ServerSingleConversation &clientInitiatedConversation =
 			serverConnection.clientInitiatedConversation;
 	if (clientInitiatedConversation.isInReadHeaderState()) {
@@ -478,9 +425,9 @@ UserActionResult handleLoginRequest(ServerConnection &serverConnection,
 	}
 	return userActionResult;
 }
-UserActionResult handleLoginState(ServerConnection &serverConnection,
+ActionResult handleLoginState(ServerConnection &serverConnection,
 		MailStore &userMailboxes,ServerFDSets &serverFDSets) {
-	UserActionResult userActionResult = PROBLEM_RESULT;
+	ActionResult userActionResult = PROBLEM_RESULT;
 	ServerSingleConversation &clientInitiatedConversation =
 			serverConnection.clientInitiatedConversation;
 	if (isSocketReadyForReading(serverConnection.workingSocket,serverFDSets)
@@ -491,7 +438,7 @@ UserActionResult handleLoginState(ServerConnection &serverConnection,
 			&& clientInitiatedConversation.isInSendResponseState()) {
 		//We know we can send data without fear of a "serverInitiatedConversation" because it is blocked at this phase
 		userActionResult = sendData(serverConnection.workingSocket,
-				clientInitiatedConversation.outMessage.buffer,
+				clientInitiatedConversation.outMessage.workingLocationBuffer,
 				clientInitiatedConversation.outMessage.numRemainingBytes);
 		if (userActionResult.shouldContinue()) {
 			if (serverConnection.loggedInUsername != NO_LOGIN_STR) { //Login succeeded
@@ -603,8 +550,8 @@ bool handleGetAttachmentState(
 	BufferedTextualProtocolMessage &outMessage =
 			serverSingleConversation.outMessage;
 	outMessage.initBuffer(FIXED_HEADER_SIZE + attachmentSize);
-	outputStringToBuffer(headerOutputString, outMessage.buffer);
-	char *attachmentBeginingPointer = outMessage.buffer + FIXED_HEADER_SIZE;
+	outputStringToBuffer(headerOutputString, outMessage.startLocationBuffer);
+	char *attachmentBeginingPointer = outMessage.startLocationBuffer + FIXED_HEADER_SIZE;
 	outputAttachmentToBuffer(attachment, attachmentBeginingPointer);
 	//delete input mailMessage;
 	//here we know only the message pointer itself was initialized
@@ -671,8 +618,8 @@ void handleComposeMailState(ServerSingleConversation &serverSingleConversation,
 	//iterate over the recipients and duplicate the message for every recipient
 	for (unsigned int i = 0; i < inputMailMessage->recipients.size(); i++) {
 		//for each recipient we will clone the message
-		Mailbox &recipientMailbox = userMailboxes.at(
-				inputMailMessage->recipients.at(i));
+		string &recipient = inputMailMessage->recipients.at(i);
+		Mailbox &recipientMailbox = userMailboxes.at(recipient);
 		saveMail(recipientMailbox,username,inputMailMessage);
 	}
 	//clean up of the input
@@ -708,7 +655,7 @@ void prepareChatMessageForClient(vector<string> &chatMessages,ServerSingleConver
 			messagesStr);
 	chatMessages.clear();
 }
-UserActionResult handleChatMessageServerSending(ServerConnection &serverConnection) {
+ActionResult handleChatMessageServerSending(ServerConnection &serverConnection) {
 	ServerSingleConversation &serverInitiatedConversation =
 			serverConnection.serverInitiatedConversation;
 	BufferedTextualProtocolMessage &outMessage =
@@ -717,8 +664,8 @@ UserActionResult handleChatMessageServerSending(ServerConnection &serverConnecti
 		prepareChatMessageForClient(serverConnection.userMailBox->chatMessages,serverInitiatedConversation);
 		serverInitiatedConversation.state = SEND_RESPONSE;
 	}
-	UserActionResult userActionResult = sendData(serverConnection.workingSocket,
-			outMessage.buffer, outMessage.numRemainingBytes);
+	ActionResult userActionResult = sendData(serverConnection.workingSocket,
+			outMessage.workingLocationBuffer, outMessage.numRemainingBytes);
 	return userActionResult;
 }
 bool messageContainsNoBody(BufferedTextualProtocolMessage &message){
@@ -780,9 +727,9 @@ void handleSendChatMessageState(ServerSingleConversation &serverSingleConversati
 			responseMessage);
 }
 
-UserActionResult handleUserInteraction(ServerConnection &serverConnection,
+ActionResult handleUserInteraction(ServerConnection &serverConnection,
 		MailStore &userMailboxes,ServerFDSets &serverFDSets) {
-	UserActionResult userActionResult = PROBLEM_RESULT;
+	ActionResult userActionResult = PROBLEM_RESULT;
 	if (shouldSendChatMessage(serverConnection,serverFDSets)) {
 		userActionResult = handleChatMessageServerSending(serverConnection);
 		if (userActionResult.errorOccurred) {
@@ -816,12 +763,12 @@ UserActionResult handleUserInteraction(ServerConnection &serverConnection,
 			inMessage.initBuffer(header.bodyLength);
 		}
 		userActionResult = receiveData(serverConnection.workingSocket,
-				inMessage.buffer, inMessage.numRemainingBytes);
+				inMessage.workingLocationBuffer, inMessage.numRemainingBytes);
 		if (userActionResult.errorOccurred) {
 			inMessage.clearBuffer();
 		}
 		if (userActionResult.shouldContinue()) {
-			parseTextualBasedBodyFromBuffer(inMessage.buffer, header,
+			parseTextualBasedBodyFromBuffer(inMessage.startLocationBuffer, header,
 					inMessage.textualProtocolMessage.body);
 			clientInitiatedConversation.advanceConversation();
 			inMessage.clearBuffer();
@@ -868,16 +815,16 @@ UserActionResult handleUserInteraction(ServerConnection &serverConnection,
 		BufferedTextualProtocolMessage &outMessage =
 				serverConnection.clientInitiatedConversation.outMessage;
 		userActionResult = sendData(serverConnection.workingSocket,
-				outMessage.buffer, outMessage.numRemainingBytes);
+				outMessage.workingLocationBuffer, outMessage.numRemainingBytes);
 		if (userActionResult.shouldContinue()) {
 			clientInitiatedConversation.reset();
 		}
 	}
 	return userActionResult;
 }
-UserActionResult handleUserSession(ServerConnection &serverConnection,
+ActionResult handleUserSession(ServerConnection &serverConnection,
 		MailStore &userMailboxes,ServerFDSets &serverFDSets) {
-	UserActionResult userActionResult = PROBLEM_RESULT;
+	ActionResult userActionResult = PROBLEM_RESULT;
 	switch (serverConnection.connectionState) {
 	case CONNECTION:
 		userActionResult = handleConnectState(serverConnection,serverFDSets);
@@ -1000,6 +947,7 @@ int main(int argc, char* argv[]) {
 	int numConnectedConnections=0;
 	while (true) {
 		printScheduledSockets(serverFDSets,connectionStore,listeningServerSocket);
+		scheduleSocketForReading(0,serverFDSets);
 		scheduleSocketForReading(listeningServerSocket,serverFDSets);
 		serverFDSets.beginIteration();
 		if (select(serverFDSets.curfdmax + 1, &serverFDSets.fDPairSetsCurSelectResponse.read, &serverFDSets.fDPairSetsCurSelectResponse.write, NULL, NULL)
@@ -1009,6 +957,9 @@ int main(int argc, char* argv[]) {
 		}
 		// run through the existing connections looking for data to read or write
 		for (int i = 0; i <= serverFDSets.curfdmax; i++) {
+			if (i==0 && isSocketReadyForReading(i,serverFDSets)){
+				goto exitSection;
+			}
 			if (i == listeningServerSocket) {
 				if (!hasMaxNumberOfConnectionsBeenReached(numConnectedConnections) && isSocketReadyForReading(i, serverFDSets)) { // we got a connection
 					// handle new connections
@@ -1042,9 +993,9 @@ int main(int argc, char* argv[]) {
 			if (isSocketReadyForReading(i,serverFDSets) || isSocketReadyForWriting(i,serverFDSets)) {
 				// handle data from a client
 				try {
-					ConnectionStore::iterator iter = connectionStore.find(i);
+					ConnectionStore::iterator iter = connectionStore.find(i) ;
 					ServerConnection &serverConnection = iter->second;
-					UserActionResult userActionResult = handleUserSession(
+					ActionResult userActionResult = handleUserSession(
 							serverConnection, userMailboxes,serverFDSets);
 					if (userActionResult.errorOccurred) {
 						deleteUserConnection(serverConnection);
@@ -1059,8 +1010,17 @@ int main(int argc, char* argv[]) {
 						}
 					}
 				} catch (...) {
-					//we don't do anything here since we explicitly don't care if a user sent in faulty input
+					//we don't send the user anything here since we explicitly don't care if a user sent in faulty input
 					//their session is automatically ended and the server continues on with its business
+					try {
+						ConnectionStore::iterator iter = connectionStore.find(i) ;
+						ServerConnection &serverConnection = iter->second;
+						deleteUserConnection(serverConnection);
+						connectionStore.erase(i);
+						numConnectedConnections--;
+					} catch (...){
+						//If this fails then there's nothing to do
+					}
 				}
 			} else {
 				//If the socket was scheduled for either reading or writing but hasn't popped up yet we need to reschedule it
@@ -1073,6 +1033,7 @@ int main(int argc, char* argv[]) {
 			}
 		}
 	}
+	exitSection:
 	TEMP_FAILURE_RETRY(close (listeningServerSocket));
 	//We do this as to overcome temproray issues with closing the socket
 	deleteConnectionStore(connectionStore);
